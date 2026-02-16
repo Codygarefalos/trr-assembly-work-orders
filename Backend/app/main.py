@@ -96,12 +96,26 @@ def get_db():
 # -----------------------------
 # Auth helpers
 # -----------------------------
+def normalize_pin(pin: str) -> str:
+    # Remove spaces or hidden characters and keep only digits
+    p = (pin or "").strip()
+    p = re.sub(r"\D", "", p)
+    return p
+
+
 def hash_pin(pin: str) -> str:
-    return pwd_context.hash(pin)
+    p = normalize_pin(pin)
+    if not re.fullmatch(r"\d{4,6}", p):
+        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
+    return pwd_context.hash(p)
 
 
 def verify_pin(pin: str, pin_hash: str) -> bool:
-    return pwd_context.verify(pin, pin_hash)
+    p = normalize_pin(pin)
+    if not re.fullmatch(r"\d{4,6}", p):
+        return False
+    return pwd_context.verify(p, pin_hash)
+
 
 
 def create_token(user: User) -> str:
