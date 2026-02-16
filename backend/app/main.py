@@ -41,6 +41,8 @@ if not JWT_SECRET:
 # Stable on Render (no bcrypt issues)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
+RESET_TOKEN = os.getenv("RESET_TOKEN", "").strip()
+
 
 
 # -----------------------------
@@ -249,6 +251,13 @@ class CloseWOResponse(BaseModel):
     ok: bool
     status: str
 
+class ResetPinRequest(BaseModel):
+    name: str
+    new_pin: str = Field(min_length=4, max_length=6)
+
+class OkResponse(BaseModel):
+    ok: bool = True
+
 
 # -----------------------------
 # App
@@ -360,6 +369,25 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     db.refresh(u)
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
+@app.post("/admin/reset-pin", response_model=OkResponse)
+def admin_reset_pin(
+    req: ResetPinRequest,
+    x_reset_token: Optional[str] = Header(default=None, convert_underscores=False),
+    db: Session = Depends(get_db),
+):
+    if not RESET_TOKEN:
+        raise HTTPException(status_code=500, detail="RESET_TOKEN not set on server")
+
+    if not x_reset_token or x_reset_token.strip() != RESET_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid reset token")
+
+    user = db.execute(select(User).where(User.name == req.name)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.pin_hash = hash_pin(req.new_pin)
+    db.commit()
+    return OkResponse(ok=True)
 
 @app.post("/admin/users/reset-pin", response_model=UserOut)
 def admin_reset_user_pin(
