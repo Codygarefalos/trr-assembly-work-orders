@@ -170,6 +170,11 @@ function Login({ onLogin, onError }) {
   );
 }
 
+/**
+ * AdminPanel (unchanged from your last working version)
+ * NOTE: If you already have this part working, keep your existing AdminPanel.
+ * Keeping it here so this file is fully replaceable.
+ */
 function AdminPanel({ token, user, onError }) {
   const [users, setUsers] = React.useState([]);
 
@@ -204,7 +209,10 @@ function AdminPanel({ token, user, onError }) {
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h2 style={{ margin: 0 }}>Admin</h2>
-        <button style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }} onClick={() => refresh().catch((e) => onError(e.message))}>
+        <button
+          style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
+          onClick={() => refresh().catch((e) => onError(e.message))}
+        >
           Refresh
         </button>
       </div>
@@ -530,22 +538,52 @@ function WorkOrders({ token, user, onError }) {
   );
 }
 
+/**
+ * ✅ UPDATED:
+ * Part Number is now a dropdown populated from /parts.
+ * Includes "(Not listed) Enter manually…" option.
+ */
 function CreateWOButton({ token, onCreated, onError }) {
   const [open, setOpen] = React.useState(false);
+
   const [stations, setStations] = React.useState([]);
   const [station, setStation] = React.useState("");
-  const [partNumber, setPartNumber] = React.useState("");
+
+  const [parts, setParts] = React.useState([]);
+  const [selectedPart, setSelectedPart] = React.useState(""); // dropdown value
+  const [manualPart, setManualPart] = React.useState(""); // if not listed
+
   const [customerOrder, setCustomerOrder] = React.useState("");
   const [isStock, setIsStock] = React.useState(false);
 
+  const NOT_LISTED = "__NOT_LISTED__";
+
   React.useEffect(() => {
     if (!open) return;
-    api("/stations", { token })
-      .then((d) => {
-        setStations(d.stations || []);
-        setStation((d.stations || [])[0] || "");
+
+    Promise.all([
+      api("/stations", { token }),
+      api("/parts", { token }), // requires admin/supervisor; Create WO is admin/supervisor only, so OK
+    ])
+      .then(([s, p]) => {
+        const st = s.stations || [];
+        setStations(st);
+        setStation(st[0] || "");
+
+        const partList = (p || []).map((x) => x.part_number).sort((a, b) => a.localeCompare(b));
+        setParts(partList);
+
+        // default select first part if any; else go to manual
+        if (partList.length > 0) {
+          setSelectedPart(partList[0]);
+          setManualPart("");
+        } else {
+          setSelectedPart(NOT_LISTED);
+          setManualPart("");
+        }
       })
       .catch((e) => onError(e.message));
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -557,8 +595,10 @@ function CreateWOButton({ token, onCreated, onError }) {
     );
   }
 
+  const finalPartNumber = selectedPart === NOT_LISTED ? manualPart.trim() : selectedPart;
+
   return (
-    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, width: 360 }}>
+    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, width: 380 }}>
       <div style={{ display: "flex", alignItems: "center" }}>
         <div style={{ fontWeight: 900 }}>Create Work Order</div>
         <button style={{ marginLeft: "auto", border: "1px solid #ddd", borderRadius: 10, padding: "6px 10px", cursor: "pointer" }} onClick={() => setOpen(false)}>
@@ -571,15 +611,44 @@ function CreateWOButton({ token, onCreated, onError }) {
           Station
           <select value={station} onChange={(e) => setStation(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}>
             {stations.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
         </label>
 
         <label>
           Part Number
-          <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
+          <select
+            value={selectedPart}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSelectedPart(v);
+              if (v !== NOT_LISTED) setManualPart("");
+            }}
+            style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+          >
+            {parts.map((pn) => (
+              <option key={pn} value={pn}>
+                {pn}
+              </option>
+            ))}
+            <option value={NOT_LISTED}>(Not listed) Enter manually…</option>
+          </select>
         </label>
+
+        {selectedPart === NOT_LISTED ? (
+          <label>
+            Manual Part Number
+            <input
+              value={manualPart}
+              onChange={(e) => setManualPart(e.target.value)}
+              placeholder="Type part number"
+              style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+            />
+          </label>
+        ) : null}
 
         <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
@@ -596,19 +665,23 @@ function CreateWOButton({ token, onCreated, onError }) {
         <button
           onClick={async () => {
             try {
+              if (!finalPartNumber) throw new Error("Part Number is required");
+
               await api("/work-orders", {
                 method: "POST",
                 token,
                 body: {
                   station,
-                  part_number: partNumber,
+                  part_number: finalPartNumber,
                   customer_order: isStock ? null : customerOrder,
                   is_stock: isStock,
                 },
               });
-              setPartNumber("");
+
               setCustomerOrder("");
               setIsStock(false);
+              setSelectedPart(parts[0] || NOT_LISTED);
+              setManualPart("");
               setOpen(false);
               await onCreated();
             } catch (e) {
@@ -624,6 +697,13 @@ function CreateWOButton({ token, onCreated, onError }) {
   );
 }
 
+/**
+ * WorkOrderDetail (unchanged from your working version with:
+ * - Instructions link
+ * - Check-in/out
+ * - Mark complete / Undo complete
+ * - Close / Reopen
+ */
 function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
   const [wo, setWo] = React.useState(null);
   const [notes, setNotes] = React.useState([]);
