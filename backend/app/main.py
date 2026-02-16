@@ -455,9 +455,35 @@ def create_work_order(
         created_at=wo.created_at,
     )
 
+from fastapi import Query
 
 @app.get("/work-orders", response_model=List[WOOut])
-def list_work_orders(_user: User = Depends(require_user), db: Session = Depends(get_db)):
+def list_work_orders(
+    _user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+    status: Optional[str] = Query(default=None),
+):
+    q = select(WorkOrder)
+
+    if status:
+        q = q.where(WorkOrder.status == status.strip().lower())
+
+    wos = db.execute(q.order_by(WorkOrder.id.desc())).scalars().all()
+
+    return [
+        WOOut(
+            id=wo.id,
+            wo_number=wo.wo_number,
+            station=wo.station,
+            part_number=wo.part_number,
+            customer_order=wo.customer_order,
+            is_stock=wo.is_stock,
+            status=wo.status,
+            created_at=wo.created_at,
+        )
+        for wo in wos
+    ]
+
     wos = db.execute(select(WorkOrder).order_by(WorkOrder.id.desc())).scalars().all()
     return [
         WOOut(
