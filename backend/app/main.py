@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -33,16 +33,15 @@ TOKEN_TTL_HOURS = 12
 
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 
+RESET_TOKEN = os.getenv("RESET_TOKEN", "").strip()
+
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL env var is required")
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
-# Stable on Render (no bcrypt issues)
+# Render-safe hash (no bcrypt dependency issues)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-
-RESET_TOKEN = os.getenv("RESET_TOKEN", "").strip()
-
 
 
 # -----------------------------
@@ -75,10 +74,18 @@ class WorkOrder(Base):
     customer_order: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     is_stock: Mapped[bool] = mapped_column(default=False)
 
-    status: Mapped[str] = mapped_column(String(30), default="open", index=True)  # open|in_progress|complete
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # open | in_progress | complete | closed
+    status: Mapped[str] = mapped_column(String(30), default="open", index=True)
 
-    notes: Mapped[List["WorkOrderNote"]] = relationship(back_populates="work_order", cascade="all, delete-orphan")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    notes: Mapped[List["WorkOrderNote"]] = relationship(
+        back_populates="work_order",
+        cascade="all, delete-orphan",
+    )
 
 
 class WorkOrderNote(Base):
@@ -90,7 +97,11 @@ class WorkOrderNote(Base):
 
     station: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     text: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
     work_order: Mapped["WorkOrder"] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship(back_populates="notes")
@@ -103,7 +114,10 @@ class WorkOrderWorker(Base):
     work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
 
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     work_order: Mapped["WorkOrder"] = relationship()
@@ -204,9 +218,13 @@ class UserOut(BaseModel):
     is_active: bool
 
 
-class ResetUserPinRequest(BaseModel):
-    user_id: int
+class ResetPinRequest(BaseModel):
+    name: str
     new_pin: str = Field(min_length=4, max_length=6)
+
+
+class OkResponse(BaseModel):
+    ok: bool = True
 
 
 class CreateWORequest(BaseModel):
@@ -245,18 +263,12 @@ class WorkerOut(BaseModel):
     name: str
     role: str
     started_at: datetime
+    is_checked_in: bool
 
 
 class CloseWOResponse(BaseModel):
     ok: bool
     status: str
-
-class ResetPinRequest(BaseModel):
-    name: str
-    new_pin: str = Field(min_length=4, max_length=6)
-
-class OkResponse(BaseModel):
-    ok: bool = True
 
 
 # -----------------------------
@@ -369,11 +381,11 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     db.refresh(u)
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
+
 @app.post("/admin/reset-pin", response_model=OkResponse)
 def admin_reset_pin(
     req: ResetPinRequest,
     x_reset_token: Optional[str] = Header(default=None, alias="X-Reset-Token"),
-
     db: Session = Depends(get_db),
 ):
     if not RESET_TOKEN:
@@ -382,29 +394,14 @@ def admin_reset_pin(
     if not x_reset_token or x_reset_token.strip() != RESET_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid reset token")
 
-    user = db.execute(select(User).where(User.name == req.name)).scalar_one_or_none()
+    user = db.execute(select(User).where(User.name == req.name.strip())).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.pin_hash = hash_pin(req.new_pin)
+    user.pin_hash = hash_pin(req.new_pin.strip())
+    user.is_active = True
     db.commit()
     return OkResponse(ok=True)
-
-@app.post("/admin/users/reset-pin", response_model=UserOut)
-def admin_reset_user_pin(
-    req: ResetUserPinRequest,
-    _admin: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    u = db.get(User, req.user_id)
-    if not u:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    u.pin_hash = hash_pin(req.new_pin.strip())
-    u.is_active = True
-    db.commit()
-    db.refresh(u)
-    return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
 
 @app.get("/stations")
@@ -455,7 +452,6 @@ def create_work_order(
         created_at=wo.created_at,
     )
 
-from fastapi import Query
 
 @app.get("/work-orders", response_model=List[WOOut])
 def list_work_orders(
@@ -464,27 +460,10 @@ def list_work_orders(
     status: Optional[str] = Query(default=None),
 ):
     q = select(WorkOrder)
-
     if status:
         q = q.where(WorkOrder.status == status.strip().lower())
 
     wos = db.execute(q.order_by(WorkOrder.id.desc())).scalars().all()
-
-    return [
-        WOOut(
-            id=wo.id,
-            wo_number=wo.wo_number,
-            station=wo.station,
-            part_number=wo.part_number,
-            customer_order=wo.customer_order,
-            is_stock=wo.is_stock,
-            status=wo.status,
-            created_at=wo.created_at,
-        )
-        for wo in wos
-    ]
-
-    wos = db.execute(select(WorkOrder).order_by(WorkOrder.id.desc())).scalars().all()
     return [
         WOOut(
             id=wo.id,
@@ -516,21 +495,6 @@ def get_work_order(wo_id: int, _user: User = Depends(require_user), db: Session 
         status=wo.status,
         created_at=wo.created_at,
     )
-
-
-@app.post("/work-orders/{wo_id}/close", response_model=CloseWOResponse)
-def close_work_order(
-    wo_id: int,
-    _sup: User = Depends(require_role("admin", "supervisor")),
-    db: Session = Depends(get_db),
-):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-
-    wo.status = "complete"
-    db.commit()
-    return CloseWOResponse(ok=True, status=wo.status)
 
 
 # -----------------------------
@@ -599,14 +563,9 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
 
 
 # -----------------------------
-# Workers (check in/out + warning)
+# Workers (the routes your FRONTEND expects)
 # -----------------------------
-@app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
-def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-
+def _active_workers_for_wo(db: Session, wo_id: int) -> List[WorkerOut]:
     rows = (
         db.execute(
             select(WorkOrderWorker, User)
@@ -620,15 +579,33 @@ def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = 
 
     out: List[WorkerOut] = []
     for w, u in rows:
-        out.append(WorkerOut(user_id=u.id, name=u.name, role=u.role, started_at=w.started_at))
+        out.append(
+            WorkerOut(
+                user_id=u.id,
+                name=u.name,
+                role=u.role,
+                started_at=w.started_at,
+                is_checked_in=True,
+            )
+        )
     return out
 
 
-@app.post("/work-orders/{wo_id}/workers/start", response_model=List[WorkerOut])
-def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+@app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
+def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+    return _active_workers_for_wo(db, wo_id)
+
+
+@app.post("/work-orders/{wo_id}/check-in", response_model=List[WorkerOut])
+def check_in(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if wo.status == "closed":
+        raise HTTPException(status_code=400, detail="Work order is closed")
 
     existing = db.execute(
         select(WorkOrderWorker)
@@ -643,11 +620,11 @@ def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sess
             wo.status = "in_progress"
         db.commit()
 
-    return list_workers(wo_id, user, db)
+    return _active_workers_for_wo(db, wo_id)
 
 
-@app.post("/work-orders/{wo_id}/workers/stop")
-def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+@app.post("/work-orders/{wo_id}/check-out", response_model=OkResponse)
+def check_out(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
@@ -664,4 +641,49 @@ def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sessi
         r.ended_at = now
 
     db.commit()
-    return {"ok": True}
+    return OkResponse(ok=True)
+
+
+# -----------------------------
+# Status transitions (match your UI buttons)
+# -----------------------------
+@app.post("/work-orders/{wo_id}/mark-complete", response_model=CloseWOResponse)
+def mark_complete(
+    wo_id: int,
+    _u: User = Depends(require_role("assembler", "supervisor", "admin")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if wo.status == "closed":
+        raise HTTPException(status_code=400, detail="Work order is already closed")
+
+    wo.status = "complete"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/close", response_model=CloseWOResponse)
+def close_work_order(
+    wo_id: int,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    # end everyone still checked in
+    now = datetime.now(timezone.utc)
+    active_rows = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalars().all()
+    for r in active_rows:
+        r.ended_at = now
+
+    wo.status = "closed"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
