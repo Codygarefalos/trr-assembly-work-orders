@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 from fastapi import (
     FastAPI,
@@ -16,7 +16,7 @@ from fastapi import (
     Form,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
@@ -50,6 +50,7 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
+# Stable on Render
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
@@ -65,7 +66,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    role: Mapped[str] = mapped_column(String(20), index=True)  # assembler | supervisor | admin
+    role: Mapped[str] = mapped_column(String(20), index=True)  # assembler|supervisor|admin
     pin_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(default=True)
 
@@ -73,22 +74,17 @@ class User(Base):
 
 
 class Part(Base):
-    """
-    Part “database” with an instruction file stored in Postgres.
-    """
     __tablename__ = "parts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     part_number: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
-    filename: Mapped[str] = mapped_column(String(255))
-    mime_type: Mapped[str] = mapped_column(String(120))
-    content: Mapped[bytes] = mapped_column(LargeBinary)
+    instruction_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    instruction_content_type: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    instruction_bytes: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
 
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    uploaded_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-
-    uploaded_by: Mapped["User"] = relationship()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class WorkOrder(Base):
@@ -98,12 +94,19 @@ class WorkOrder(Base):
     wo_number: Mapped[str] = mapped_column(String(20), unique=True, index=True)  # WO-000001
     station: Mapped[str] = mapped_column(String(80), index=True)
 
+    # keep part_number string for display + searching
     part_number: Mapped[str] = mapped_column(String(80), index=True)
+
+    # optional reference to parts table if it exists
+    part_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parts.id"), nullable=True, index=True)
+    part: Mapped[Optional["Part"]] = relationship()
+
     customer_order: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     is_stock: Mapped[bool] = mapped_column(default=False)
 
     # open | in_progress | complete | closed
     status: Mapped[str] = mapped_column(String(30), default="open", index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     notes: Mapped[List["WorkOrderNote"]] = relationship(back_populates="work_order", cascade="all, delete-orphan")
@@ -225,6 +228,12 @@ class CreateUserRequest(BaseModel):
     pin: str = Field(min_length=4, max_length=6)
 
 
+class UpdateUserRequest(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class UserOut(BaseModel):
     id: int
     name: str
@@ -248,6 +257,14 @@ class CreateWORequest(BaseModel):
     is_stock: bool = False
 
 
+class UpdateWORequest(BaseModel):
+    station: Optional[str] = None
+    part_number: Optional[str] = None
+    customer_order: Optional[str] = None
+    is_stock: Optional[bool] = None
+    status: Optional[str] = None  # allow admin/supervisor to set open|in_progress|complete|closed
+
+
 class WOOut(BaseModel):
     id: int
     wo_number: str
@@ -259,11 +276,6 @@ class WOOut(BaseModel):
     created_at: datetime
     instruction_url: Optional[str] = None
     instruction_filename: Optional[str] = None
-
-
-class CloseWOResponse(BaseModel):
-    ok: bool
-    status: str
 
 
 class AddNoteRequest(BaseModel):
@@ -284,16 +296,24 @@ class WorkerOut(BaseModel):
     name: str
     role: str
     started_at: datetime
-    is_checked_in: bool
+
+
+class CloseWOResponse(BaseModel):
+    ok: bool
+    status: str
 
 
 class PartOut(BaseModel):
     id: int
     part_number: str
-    filename: str
-    uploaded_at: datetime
-    uploaded_by: str
-    instruction_url: str
+    description: Optional[str] = None
+    instruction_url: Optional[str] = None
+    instruction_filename: Optional[str] = None
+
+
+class UpdatePartRequest(BaseModel):
+    part_number: Optional[str] = None
+    description: Optional[str] = None
 
 
 # -----------------------------
@@ -328,9 +348,25 @@ def next_wo_number(db: Session) -> str:
     return f"WO-{n:06d}"
 
 
-def instruction_url_for_part(part_number: str) -> str:
-    # Relative URL (frontend will prefix API_BASE)
-    return f"/parts/{part_number}/instruction"
+def wo_to_out(wo: WorkOrder) -> WOOut:
+    instruction_url = None
+    instruction_filename = None
+    if wo.part_id:
+        instruction_url = f"/parts/{wo.part_id}/file"
+        if wo.part and wo.part.instruction_filename:
+            instruction_filename = wo.part.instruction_filename
+    return WOOut(
+        id=wo.id,
+        wo_number=wo.wo_number,
+        station=wo.station,
+        part_number=wo.part_number,
+        customer_order=wo.customer_order,
+        is_stock=wo.is_stock,
+        status=wo.status,
+        created_at=wo.created_at,
+        instruction_url=instruction_url,
+        instruction_filename=instruction_filename,
+    )
 
 
 @app.on_event("startup")
@@ -373,20 +409,17 @@ def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_
 # -----------------------------
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    name = payload.name.strip()
-    pin = payload.pin.strip()
-
-    user = db.execute(select(User).where(User.name == name)).scalar_one_or_none()
+    user = db.execute(select(User).where(User.name == payload.name.strip())).scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid name or PIN")
-    if not verify_pin(pin, user.pin_hash):
+    if not verify_pin(payload.pin.strip(), user.pin_hash):
         raise HTTPException(status_code=401, detail="Invalid name or PIN")
 
     return LoginResponse(token=create_token(user), name=user.name, role=user.role)
 
 
 # -----------------------------
-# Users
+# Users (Admin CRUD)
 # -----------------------------
 @app.get("/users", response_model=List[UserOut])
 def list_users(_u: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
@@ -415,6 +448,56 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
 
+@app.patch("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    req: UpdateUserRequest,
+    _admin: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    u = db.get(User, user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if req.name is not None:
+        new_name = req.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Name cannot be blank")
+        if new_name != u.name:
+            exists = db.execute(select(User).where(User.name == new_name)).scalar_one_or_none()
+            if exists:
+                raise HTTPException(status_code=400, detail="User name already exists")
+            u.name = new_name
+
+    if req.role is not None:
+        role = req.role.strip().lower()
+        if role not in ("assembler", "supervisor", "admin"):
+            raise HTTPException(status_code=400, detail="role must be assembler, supervisor, or admin")
+        u.role = role
+
+    if req.is_active is not None:
+        u.is_active = bool(req.is_active)
+
+    db.commit()
+    db.refresh(u)
+    return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
+
+
+@app.delete("/users/{user_id}", response_model=OkResponse)
+def delete_user(
+    user_id: int,
+    _admin: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    # Safer than hard delete: deactivate
+    u = db.get(User, user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    u.is_active = False
+    db.commit()
+    return OkResponse(ok=True)
+
+
 @app.post("/admin/reset-pin", response_model=OkResponse)
 def admin_reset_pin(
     req: ResetPinRequest,
@@ -427,11 +510,11 @@ def admin_reset_pin(
     if not x_reset_token or x_reset_token.strip() != RESET_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid reset token")
 
-    user = db.execute(select(User).where(User.name == req.name.strip())).scalar_one_or_none()
+    user = db.execute(select(User).where(User.name == req.name)).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.pin_hash = hash_pin(req.new_pin.strip())
+    user.pin_hash = hash_pin(req.new_pin)
     user.is_active = True
     db.commit()
     return OkResponse(ok=True)
@@ -443,37 +526,29 @@ def stations(_user: User = Depends(require_user)):
 
 
 # -----------------------------
-# Parts / Work Instructions
+# Parts (Admin/Supervisor CRUD + file storage in DB)
 # -----------------------------
 @app.get("/parts", response_model=List[PartOut])
 def list_parts(_u: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
-    rows = (
-        db.execute(
-            select(Part, User.name)
-            .join(User, User.id == Part.uploaded_by_user_id)
-            .order_by(Part.part_number.asc())
-        )
-        .all()
-    )
-
+    parts = db.execute(select(Part).order_by(Part.part_number.asc())).scalars().all()
     out: List[PartOut] = []
-    for p, uploader_name in rows:
+    for p in parts:
         out.append(
             PartOut(
                 id=p.id,
                 part_number=p.part_number,
-                filename=p.filename,
-                uploaded_at=p.uploaded_at,
-                uploaded_by=uploader_name,
-                instruction_url=instruction_url_for_part(p.part_number),
+                description=p.description,
+                instruction_url=(f"/parts/{p.id}/file" if p.instruction_bytes else None),
+                instruction_filename=p.instruction_filename,
             )
         )
     return out
 
 
-@app.post("/parts/upload", response_model=PartOut)
-async def upload_part_instruction(
+@app.post("/parts", response_model=PartOut)
+async def create_part(
     part_number: str = Form(...),
+    description: str = Form(""),
     file: UploadFile = File(...),
     _u: User = Depends(require_role("admin", "supervisor")),
     db: Session = Depends(get_db),
@@ -482,66 +557,105 @@ async def upload_part_instruction(
     if not pn:
         raise HTTPException(status_code=400, detail="part_number is required")
 
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="file is required")
+    exists = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
+    if exists:
+        raise HTTPException(status_code=400, detail="Part number already exists")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        raise HTTPException(status_code=400, detail="Empty file")
 
-    mime = file.content_type or "application/octet-stream"
-    filename = file.filename
-
-    existing: Optional[Part] = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
-    if existing:
-        existing.filename = filename
-        existing.mime_type = mime
-        existing.content = content
-        existing.uploaded_at = datetime.now(timezone.utc)
-        existing.uploaded_by_user_id = _u.id
-        db.commit()
-        db.refresh(existing)
-        uploader = _u.name
-        p = existing
-    else:
-        p = Part(
-            part_number=pn,
-            filename=filename,
-            mime_type=mime,
-            content=content,
-            uploaded_by_user_id=_u.id,
-        )
-        db.add(p)
-        db.commit()
-        db.refresh(p)
-        uploader = _u.name
+    p = Part(
+        part_number=pn,
+        description=(description.strip() or None),
+        instruction_filename=file.filename,
+        instruction_content_type=file.content_type or "application/octet-stream",
+        instruction_bytes=content,
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
 
     return PartOut(
         id=p.id,
         part_number=p.part_number,
-        filename=p.filename,
-        uploaded_at=p.uploaded_at,
-        uploaded_by=uploader,
-        instruction_url=instruction_url_for_part(p.part_number),
+        description=p.description,
+        instruction_url=f"/parts/{p.id}/file" if p.instruction_bytes else None,
+        instruction_filename=p.instruction_filename,
     )
 
 
-@app.get("/parts/{part_number}/instruction")
-def download_part_instruction(
-    part_number: str,
-    _user: User = Depends(require_user),
+@app.patch("/parts/{part_id}", response_model=PartOut)
+def update_part(
+    part_id: int,
+    req: UpdatePartRequest,
+    _u: User = Depends(require_role("admin", "supervisor")),
     db: Session = Depends(get_db),
 ):
-    pn = part_number.strip()
-    p: Optional[Part] = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
+    p = db.get(Part, part_id)
     if not p:
-        raise HTTPException(status_code=404, detail="No instructions found for that part number")
+        raise HTTPException(status_code=404, detail="Part not found")
 
-    def iter_bytes():
-        yield p.content
+    if req.part_number is not None:
+        new_pn = req.part_number.strip()
+        if not new_pn:
+            raise HTTPException(status_code=400, detail="part_number cannot be blank")
+        if new_pn != p.part_number:
+            exists = db.execute(select(Part).where(Part.part_number == new_pn)).scalar_one_or_none()
+            if exists:
+                raise HTTPException(status_code=400, detail="Part number already exists")
+            # also update any work orders that still hold old string
+            old = p.part_number
+            p.part_number = new_pn
+            db.execute(select(WorkOrder))  # no-op to ensure mapper loaded
+            wos = db.execute(select(WorkOrder).where(WorkOrder.part_number == old)).scalars().all()
+            for wo in wos:
+                wo.part_number = new_pn
 
-    headers = {"Content-Disposition": f'inline; filename="{p.filename}"'}
-    return StreamingResponse(iter_bytes(), media_type=p.mime_type or "application/octet-stream", headers=headers)
+    if req.description is not None:
+        p.description = req.description.strip() or None
+
+    db.commit()
+    db.refresh(p)
+
+    return PartOut(
+        id=p.id,
+        part_number=p.part_number,
+        description=p.description,
+        instruction_url=f"/parts/{p.id}/file" if p.instruction_bytes else None,
+        instruction_filename=p.instruction_filename,
+    )
+
+
+@app.put("/parts/{part_id}/file", response_model=PartOut)
+async def replace_part_file(
+    part_id: int,
+    file: UploadFile = File(...),
+    _u: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    p = db.get(Part, part_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    p.instruction_filename = file.filename
+    p.instruction_content_type = file.content_type or "application/octet-stream"
+    p.instruction_bytes = content
+
+    db.commit()
+    db.refresh(p)
+
+    return PartOut(
+        id=p.id,
+        part_number=p.part_number,
+        description=p.description,
+        instruction_url=f"/parts/{p.id}/file" if p.instruction_bytes else None,
+        instruction_filename=p.instruction_filename,
+    )
 
 
 @app.delete("/parts/{part_id}", response_model=OkResponse)
@@ -553,21 +667,39 @@ def delete_part(
     p = db.get(Part, part_id)
     if not p:
         raise HTTPException(status_code=404, detail="Part not found")
+
+    # Keep work orders intact: just detach references
+    wos = db.execute(select(WorkOrder).where(WorkOrder.part_id == part_id)).scalars().all()
+    for wo in wos:
+        wo.part_id = None  # keeps part_number string
+
     db.delete(p)
     db.commit()
     return OkResponse(ok=True)
 
 
-# -----------------------------
-# Work Orders
-# -----------------------------
-def _parts_map_for_numbers(db: Session, part_numbers: List[str]) -> Dict[str, Part]:
-    if not part_numbers:
-        return {}
-    rows = db.execute(select(Part).where(Part.part_number.in_(part_numbers))).scalars().all()
-    return {r.part_number: r for r in rows}
+@app.get("/parts/{part_id}/file")
+def download_part_file(
+    part_id: int,
+    _u: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    p = db.get(Part, part_id)
+    if not p or not p.instruction_bytes:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return Response(
+        content=p.instruction_bytes,
+        media_type=p.instruction_content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{p.instruction_filename or "instructions"}"'
+        },
+    )
 
 
+# -----------------------------
+# Work Orders CRUD + status transitions
+# -----------------------------
 @app.post("/work-orders", response_model=WOOut)
 def create_work_order(
     req: CreateWORequest,
@@ -585,10 +717,14 @@ def create_work_order(
     if not req.is_stock and not co:
         raise HTTPException(status_code=400, detail="customer_order is required unless is_stock is true")
 
+    # attach part_id if exists in parts DB
+    part = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
+
     wo = WorkOrder(
         wo_number=next_wo_number(db),
         station=req.station,
         part_number=pn,
+        part_id=(part.id if part else None),
         customer_order=(None if req.is_stock else co),
         is_stock=bool(req.is_stock),
         status="open",
@@ -596,20 +732,7 @@ def create_work_order(
     db.add(wo)
     db.commit()
     db.refresh(wo)
-
-    part = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
-    return WOOut(
-        id=wo.id,
-        wo_number=wo.wo_number,
-        station=wo.station,
-        part_number=wo.part_number,
-        customer_order=wo.customer_order,
-        is_stock=wo.is_stock,
-        status=wo.status,
-        created_at=wo.created_at,
-        instruction_url=instruction_url_for_part(pn) if part else None,
-        instruction_filename=part.filename if part else None,
-    )
+    return wo_to_out(wo)
 
 
 @app.get("/work-orders", response_model=List[WOOut])
@@ -621,28 +744,11 @@ def list_work_orders(
     q = select(WorkOrder)
     if status:
         q = q.where(WorkOrder.status == status.strip().lower())
-
     wos = db.execute(q.order_by(WorkOrder.id.desc())).scalars().all()
-    pmap = _parts_map_for_numbers(db, list({w.part_number for w in wos}))
-
-    out: List[WOOut] = []
+    # load related part
     for wo in wos:
-        part = pmap.get(wo.part_number)
-        out.append(
-            WOOut(
-                id=wo.id,
-                wo_number=wo.wo_number,
-                station=wo.station,
-                part_number=wo.part_number,
-                customer_order=wo.customer_order,
-                is_stock=wo.is_stock,
-                status=wo.status,
-                created_at=wo.created_at,
-                instruction_url=instruction_url_for_part(wo.part_number) if part else None,
-                instruction_filename=part.filename if part else None,
-            )
-        )
-    return out
+        _ = wo.part
+    return [wo_to_out(wo) for wo in wos]
 
 
 @app.get("/work-orders/{wo_id}", response_model=WOOut)
@@ -650,20 +756,143 @@ def get_work_order(wo_id: int, _user: User = Depends(require_user), db: Session 
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+    _ = wo.part
+    return wo_to_out(wo)
 
-    part = db.execute(select(Part).where(Part.part_number == wo.part_number)).scalar_one_or_none()
-    return WOOut(
-        id=wo.id,
-        wo_number=wo.wo_number,
-        station=wo.station,
-        part_number=wo.part_number,
-        customer_order=wo.customer_order,
-        is_stock=wo.is_stock,
-        status=wo.status,
-        created_at=wo.created_at,
-        instruction_url=instruction_url_for_part(wo.part_number) if part else None,
-        instruction_filename=part.filename if part else None,
-    )
+
+@app.patch("/work-orders/{wo_id}", response_model=WOOut)
+def update_work_order(
+    wo_id: int,
+    req: UpdateWORequest,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    if req.station is not None:
+        if req.station not in STATIONS:
+            raise HTTPException(status_code=400, detail="Invalid station")
+        wo.station = req.station
+
+    if req.part_number is not None:
+        pn = req.part_number.strip()
+        if not pn:
+            raise HTTPException(status_code=400, detail="part_number cannot be blank")
+        wo.part_number = pn
+        part = db.execute(select(Part).where(Part.part_number == pn)).scalar_one_or_none()
+        wo.part_id = part.id if part else None
+
+    if req.is_stock is not None:
+        wo.is_stock = bool(req.is_stock)
+        if wo.is_stock:
+            wo.customer_order = None
+
+    if req.customer_order is not None:
+        # allow clearing if stock
+        if not wo.is_stock:
+            wo.customer_order = req.customer_order.strip() or None
+        else:
+            wo.customer_order = None
+
+    if req.status is not None:
+        s = req.status.strip().lower()
+        if s not in ("open", "in_progress", "complete", "closed"):
+            raise HTTPException(status_code=400, detail="status must be open, in_progress, complete, or closed")
+        wo.status = s
+
+    db.commit()
+    db.refresh(wo)
+    _ = wo.part
+    return wo_to_out(wo)
+
+
+@app.delete("/work-orders/{wo_id}", response_model=OkResponse)
+def delete_work_order(
+    wo_id: int,
+    _admin: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    db.delete(wo)
+    db.commit()
+    return OkResponse(ok=True)
+
+
+# Status actions
+@app.post("/work-orders/{wo_id}/mark-complete", response_model=CloseWOResponse)
+def mark_complete(
+    wo_id: int,
+    _u: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if wo.status == "closed":
+        raise HTTPException(status_code=400, detail="Cannot mark complete: work order is closed")
+    wo.status = "complete"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/undo-complete", response_model=CloseWOResponse)
+def undo_complete(
+    wo_id: int,
+    _u: User = Depends(require_user),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if wo.status == "closed":
+        raise HTTPException(status_code=400, detail="Cannot undo complete: work order is closed")
+    # default back to in_progress if someone checked in, else open
+    active = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar_one_or_none()
+    wo.status = "in_progress" if active else "open"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/close", response_model=CloseWOResponse)
+def close_work_order(
+    wo_id: int,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    wo.status = "closed"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/reopen", response_model=CloseWOResponse)
+def reopen_work_order(
+    wo_id: int,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    # when reopening, go back to complete (safe) unless someone is checked in
+    active = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar_one_or_none()
+    wo.status = "in_progress" if active else "complete"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
 
 
 # -----------------------------
@@ -732,7 +961,7 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
 
 
 # -----------------------------
-# Workers (check in/out + warning)
+# Workers (check in/out)
 # -----------------------------
 @app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
 def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
@@ -753,25 +982,15 @@ def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = 
 
     out: List[WorkerOut] = []
     for w, u in rows:
-        out.append(
-            WorkerOut(
-                user_id=u.id,
-                name=u.name,
-                role=u.role,
-                started_at=w.started_at,
-                is_checked_in=True,
-            )
-        )
+        out.append(WorkerOut(user_id=u.id, name=u.name, role=u.role, started_at=w.started_at))
     return out
 
 
-@app.post("/work-orders/{wo_id}/workers/start", response_model=OkResponse)
+@app.post("/work-orders/{wo_id}/workers/start", response_model=List[WorkerOut])
 def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
-    if wo.status == "closed":
-        raise HTTPException(status_code=400, detail="Work order is closed. Reopen first.")
 
     existing = db.execute(
         select(WorkOrderWorker)
@@ -786,7 +1005,7 @@ def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sess
             wo.status = "in_progress"
         db.commit()
 
-    return OkResponse(ok=True)
+    return list_workers(wo_id, user, db)
 
 
 @app.post("/work-orders/{wo_id}/workers/stop", response_model=OkResponse)
@@ -806,99 +1025,15 @@ def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sessi
     for r in active_rows:
         r.ended_at = now
 
+    # if no one is checked in, and it's in_progress, fall back to open
+    remaining = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar_one_or_none()
+
+    if not remaining and wo.status == "in_progress":
+        wo.status = "open"
+
     db.commit()
     return OkResponse(ok=True)
-
-
-# Compatibility endpoints (frontend calls these)
-@app.post("/work-orders/{wo_id}/check-in", response_model=OkResponse)
-def check_in(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    return start_working_on_wo(wo_id, user, db)
-
-
-@app.post("/work-orders/{wo_id}/check-out", response_model=OkResponse)
-def check_out(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    return stop_working_on_wo(wo_id, user, db)
-
-
-# -----------------------------
-# Status actions (complete/close + undo/reopen)
-# -----------------------------
-@app.post("/work-orders/{wo_id}/mark-complete", response_model=CloseWOResponse)
-def mark_complete(
-    wo_id: int,
-    _u: User = Depends(require_role("admin", "supervisor", "assembler")),
-    db: Session = Depends(get_db),
-):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    if wo.status == "closed":
-        raise HTTPException(status_code=400, detail="Work order is closed. Reopen first.")
-
-    wo.status = "complete"
-    db.commit()
-    return CloseWOResponse(ok=True, status=wo.status)
-
-
-@app.post("/work-orders/{wo_id}/uncomplete", response_model=CloseWOResponse)
-def uncomplete(
-    wo_id: int,
-    _u: User = Depends(require_role("admin", "supervisor", "assembler")),
-    db: Session = Depends(get_db),
-):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    if wo.status != "complete":
-        raise HTTPException(status_code=400, detail="Work order is not marked complete")
-
-    active = db.execute(
-        select(func.count(WorkOrderWorker.id))
-        .where(WorkOrderWorker.work_order_id == wo_id)
-        .where(WorkOrderWorker.ended_at.is_(None))
-    ).scalar() or 0
-
-    wo.status = "in_progress" if active > 0 else "open"
-    db.commit()
-    return CloseWOResponse(ok=True, status=wo.status)
-
-
-@app.post("/work-orders/{wo_id}/close", response_model=CloseWOResponse)
-def close_work_order(
-    wo_id: int,
-    _sup: User = Depends(require_role("admin", "supervisor")),
-    db: Session = Depends(get_db),
-):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    if wo.status != "complete":
-        raise HTTPException(status_code=400, detail="Work order must be marked complete before closing")
-
-    wo.status = "closed"
-    db.commit()
-    return CloseWOResponse(ok=True, status=wo.status)
-
-
-@app.post("/work-orders/{wo_id}/reopen", response_model=CloseWOResponse)
-def reopen_work_order(
-    wo_id: int,
-    _sup: User = Depends(require_role("admin", "supervisor")),
-    db: Session = Depends(get_db),
-):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    if wo.status != "closed":
-        raise HTTPException(status_code=400, detail="Work order is not closed")
-
-    active = db.execute(
-        select(func.count(WorkOrderWorker.id))
-        .where(WorkOrderWorker.work_order_id == wo_id)
-        .where(WorkOrderWorker.ended_at.is_(None))
-    ).scalar() or 0
-
-    wo.status = "in_progress" if active > 0 else "open"
-    db.commit()
-    return CloseWOResponse(ok=True, status=wo.status)

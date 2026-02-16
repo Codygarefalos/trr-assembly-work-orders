@@ -2,15 +2,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import logo from "./assets/logo.png";
 
-// ------------------------------------------------------------
-// Config
-// ------------------------------------------------------------
 const API_BASE = (import.meta.env.VITE_API_BASE || "https://trr-assembly-api.onrender.com").replace(/\/+$/, "");
 const IDLE_LOGOUT_MINUTES = 30;
 
-// ------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------
 async function api(path, { method = "GET", token, body } = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
@@ -34,15 +28,10 @@ async function api(path, { method = "GET", token, body } = {}) {
   return text ? JSON.parse(text) : null;
 }
 
-// Open a protected file (requires Bearer token) in a new tab
 async function openFileWithAuth(fileUrl, token) {
   const absolute = fileUrl.startsWith("http") ? fileUrl : `${API_BASE}${fileUrl}`;
 
-  const res = await fetch(absolute, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
+  const res = await fetch(absolute, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
@@ -61,16 +50,13 @@ async function openFileWithAuth(fileUrl, token) {
 function useIdleLogout(onLogout) {
   React.useEffect(() => {
     let t = null;
-
     const reset = () => {
       if (t) clearTimeout(t);
       t = setTimeout(() => onLogout(), IDLE_LOGOUT_MINUTES * 60 * 1000);
     };
-
     const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
     events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     reset();
-
     return () => {
       if (t) clearTimeout(t);
       events.forEach((e) => window.removeEventListener(e, reset));
@@ -78,7 +64,7 @@ function useIdleLogout(onLogout) {
   }, [onLogout]);
 }
 
-function safeParseJson(raw) {
+function safeParse(raw) {
   try {
     return raw ? JSON.parse(raw) : null;
   } catch {
@@ -86,27 +72,11 @@ function safeParseJson(raw) {
   }
 }
 
-function pill(text, color = "#eef2ff") {
-  return (
-    <span
-      style={{
-        padding: "4px 10px",
-        borderRadius: 999,
-        background: color,
-        fontSize: 12,
-        fontWeight: 800,
-      }}
-    >
-      {text}
-    </span>
-  );
-}
-
-function Card({ title, children, right }) {
+function Card({ title, right, children }) {
   return (
     <div style={{ border: "1px solid #eee", borderRadius: 14, overflow: "hidden", background: "white" }}>
       <div style={{ padding: 12, display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #eee", background: "#fafafa" }}>
-        <div style={{ fontWeight: 900 }}>{title}</div>
+        <div style={{ fontWeight: 950 }}>{title}</div>
         <div style={{ marginLeft: "auto" }}>{right || null}</div>
       </div>
       <div style={{ padding: 14 }}>{children}</div>
@@ -114,13 +84,42 @@ function Card({ title, children, right }) {
   );
 }
 
-// ------------------------------------------------------------
-// App
-// ------------------------------------------------------------
+function Modal({ title, children, onClose }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "grid",
+        placeItems: "center",
+        padding: 16,
+        zIndex: 9999,
+      }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div style={{ width: "min(720px, 96vw)", background: "white", borderRadius: 16, overflow: "hidden", border: "1px solid #eee" }}>
+        <div style={{ padding: 12, display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #eee", background: "#fafafa" }}>
+          <div style={{ fontWeight: 950 }}>{title}</div>
+          <button
+            onClick={onClose}
+            style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer" }}
+          >
+            X
+          </button>
+        </div>
+        <div style={{ padding: 14 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem("trr_token") || "");
-  const [user, setUser] = React.useState(() => safeParseJson(localStorage.getItem("trr_user")));
-  const [page, setPage] = React.useState("workorders"); // workorders | admin
+  const [user, setUser] = React.useState(() => safeParse(localStorage.getItem("trr_user")));
+  const [page, setPage] = React.useState("workorders");
   const [error, setError] = React.useState("");
 
   useIdleLogout(() => {
@@ -138,10 +137,8 @@ function App() {
     setError("");
     const data = await api("/auth/login", { method: "POST", body: { name, pin } });
     const u = { name: data.name, role: data.role };
-
     setToken(data.token);
     setUser(u);
-
     localStorage.setItem("trr_token", data.token);
     localStorage.setItem("trr_user", JSON.stringify(u));
   }
@@ -247,30 +244,33 @@ function Login({ onLogin, onError }) {
   );
 }
 
-// ------------------------------------------------------------
-// Admin Panel (Users + Reset PIN + Parts database)
-// ------------------------------------------------------------
+// ---------------- Admin Panel ----------------
 function AdminPanel({ token, user, onError }) {
   const isAdmin = user?.role === "admin";
 
-  // Users
   const [users, setUsers] = React.useState([]);
+  const [parts, setParts] = React.useState([]);
+
+  // create user
   const [newName, setNewName] = React.useState("");
   const [newRole, setNewRole] = React.useState("assembler");
   const [newPin, setNewPin] = React.useState("");
 
-  // Reset PIN via RESET_TOKEN (Render env var)
+  // reset pin (reset token)
   const [resetToken, setResetToken] = React.useState("");
   const [resetName, setResetName] = React.useState("");
   const [resetPin, setResetPin] = React.useState("");
 
-  // Parts database
-  const [parts, setParts] = React.useState([]);
+  // create part
   const [partNumber, setPartNumber] = React.useState("");
   const [partDesc, setPartDesc] = React.useState("");
   const [partFile, setPartFile] = React.useState(null);
 
-  async function refreshAll() {
+  // edit modals
+  const [editUser, setEditUser] = React.useState(null);
+  const [editPart, setEditPart] = React.useState(null);
+
+  async function refresh() {
     try {
       const u = await api("/users", { token });
       setUsers(u || []);
@@ -278,19 +278,18 @@ function AdminPanel({ token, user, onError }) {
       onError(e.message);
     }
 
-    // Parts endpoints must exist on backend; if not, we just show a friendly error.
     try {
       const p = await api("/parts", { token });
       setParts(p || []);
     } catch (e) {
-      // Do not hard-fail admin panel if parts endpoints aren't present
-      console.warn("Parts API not available:", e.message);
+      // parts require backend, but our backend file includes it
+      onError(e.message);
       setParts([]);
     }
   }
 
   React.useEffect(() => {
-    refreshAll();
+    refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -300,7 +299,7 @@ function AdminPanel({ token, user, onError }) {
       setNewName("");
       setNewRole("assembler");
       setNewPin("");
-      await refreshAll();
+      await refresh();
     } catch (e) {
       onError(e.message);
     }
@@ -310,10 +309,7 @@ function AdminPanel({ token, user, onError }) {
     try {
       const res = await fetch(`${API_BASE}/admin/reset-pin`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Reset-Token": resetToken,
-        },
+        headers: { "Content-Type": "application/json", "X-Reset-Token": resetToken },
         body: JSON.stringify({ name: resetName, new_pin: resetPin }),
       });
 
@@ -328,7 +324,7 @@ function AdminPanel({ token, user, onError }) {
 
       setResetName("");
       setResetPin("");
-      await refreshAll();
+      await refresh();
     } catch (e) {
       onError(e.message);
     }
@@ -339,7 +335,6 @@ function AdminPanel({ token, user, onError }) {
       if (!partNumber.trim()) throw new Error("Part number is required");
       if (!partFile) throw new Error("Please choose a file to upload");
 
-      // multipart upload
       const fd = new FormData();
       fd.append("part_number", partNumber.trim());
       fd.append("description", partDesc.trim());
@@ -347,9 +342,7 @@ function AdminPanel({ token, user, onError }) {
 
       const res = await fetch(`${API_BASE}/parts`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
         body: fd,
       });
 
@@ -365,7 +358,7 @@ function AdminPanel({ token, user, onError }) {
       setPartNumber("");
       setPartDesc("");
       setPartFile(null);
-      await refreshAll();
+      await refresh();
     } catch (e) {
       onError(e.message);
     }
@@ -377,7 +370,7 @@ function AdminPanel({ token, user, onError }) {
         <h2 style={{ margin: 0 }}>Admin</h2>
         <button
           style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
-          onClick={() => refreshAll()}
+          onClick={() => refresh()}
         >
           Refresh
         </button>
@@ -403,7 +396,7 @@ function AdminPanel({ token, user, onError }) {
             </label>
 
             <label style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontWeight: 800 }}>PIN (4–6 digits)</div>
+              <div style={{ fontWeight: 800 }}>PIN</div>
               <input value={newPin} onChange={(e) => setNewPin(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
             </label>
 
@@ -426,10 +419,6 @@ function AdminPanel({ token, user, onError }) {
         </Card>
 
         <Card title="Reset User PIN (Admin only)">
-          <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
-            Enter your backend <b>RESET_TOKEN</b> (Render Environment) to reset PINs.
-          </div>
-
           <div style={{ display: "grid", gap: 10 }}>
             <label style={{ display: "grid", gap: 6 }}>
               <div style={{ fontWeight: 800 }}>RESET_TOKEN</div>
@@ -465,25 +454,46 @@ function AdminPanel({ token, user, onError }) {
         </Card>
       </div>
 
-      <Card title="Users">
-        {users.length === 0 ? <div style={{ opacity: 0.7 }}>No users yet.</div> : null}
-        <div style={{ display: "grid", gap: 8 }}>
-          {users.map((u) => (
-            <div key={u.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12, display: "flex", gap: 10, alignItems: "center" }}>
-              <div style={{ fontWeight: 900 }}>{u.name}</div>
-              <div style={{ opacity: 0.85 }}>{u.role}</div>
-              <div style={{ marginLeft: "auto", opacity: 0.8 }}>{u.is_active ? "active" : "inactive"}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <Card title="Parts Database (Supervisor/Admin)">
-          <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
-            Add part numbers and upload instruction documents. When creating WOs, the part list will be a dropdown.
-          </div>
+        <Card title="Users">
+          <div style={{ display: "grid", gap: 8 }}>
+            {users.map((u) => (
+              <div key={u.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ fontWeight: 950 }}>{u.name}</div>
+                <div style={{ opacity: 0.85 }}>{u.role}</div>
+                <div style={{ marginLeft: "auto", opacity: 0.8 }}>{u.is_active ? "active" : "inactive"}</div>
 
+                {isAdmin ? (
+                  <>
+                    <button
+                      onClick={() => setEditUser(u)}
+                      style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          if (!confirm(`Deactivate ${u.name}?`)) return;
+                          await api(`/users/${u.id}`, { method: "DELETE", token });
+                          await refresh();
+                        } catch (e) {
+                          onError(e.message);
+                        }
+                      }}
+                      style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
+                    >
+                      Delete
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ))}
+            {users.length === 0 ? <div style={{ opacity: 0.7 }}>No users yet.</div> : null}
+          </div>
+        </Card>
+
+        <Card title="Parts Database (Supervisor/Admin)">
           <div style={{ display: "grid", gap: 10 }}>
             <label style={{ display: "grid", gap: 6 }}>
               <div style={{ fontWeight: 800 }}>Part Number</div>
@@ -491,7 +501,7 @@ function AdminPanel({ token, user, onError }) {
             </label>
 
             <label style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontWeight: 800 }}>Description (optional)</div>
+              <div style={{ fontWeight: 800 }}>Description</div>
               <input value={partDesc} onChange={(e) => setPartDesc(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
             </label>
 
@@ -506,20 +516,14 @@ function AdminPanel({ token, user, onError }) {
             >
               Add Part + Upload Instructions
             </button>
-
-            <div style={{ opacity: 0.7, fontSize: 12 }}>
-              If this section shows no parts, your backend may not have <code>/parts</code> endpoints yet.
-            </div>
           </div>
-        </Card>
 
-        <Card title="Saved Parts">
-          {parts.length === 0 ? <div style={{ opacity: 0.7 }}>No parts yet (or parts API not enabled).</div> : null}
-          <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {parts.map((p) => (
-              <div key={p.id || p.part_number} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12, display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={{ fontWeight: 900 }}>{p.part_number}</div>
+              <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ fontWeight: 950 }}>{p.part_number}</div>
                 <div style={{ opacity: 0.8, fontSize: 13 }}>{p.description || ""}</div>
+
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                   {p.instruction_url ? (
                     <button
@@ -532,26 +536,188 @@ function AdminPanel({ token, user, onError }) {
                       }}
                       style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
                     >
-                      Open Instructions
+                      Open
                     </button>
                   ) : (
                     <span style={{ opacity: 0.6, fontSize: 12 }}>No file</span>
                   )}
+
+                  <button
+                    onClick={() => setEditPart(p)}
+                    style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      try {
+                        if (!confirm(`Delete part ${p.part_number}?`)) return;
+                        await api(`/parts/${p.id}`, { method: "DELETE", token });
+                        await refresh();
+                      } catch (e) {
+                        onError(e.message);
+                      }
+                    }}
+                    style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
+            {parts.length === 0 ? <div style={{ opacity: 0.7 }}>No parts yet.</div> : null}
           </div>
         </Card>
       </div>
+
+      {editUser ? (
+        <EditUserModal
+          token={token}
+          user={editUser}
+          onClose={() => setEditUser(null)}
+          onSaved={async () => {
+            setEditUser(null);
+            await refresh();
+          }}
+          onError={onError}
+        />
+      ) : null}
+
+      {editPart ? (
+        <EditPartModal
+          token={token}
+          part={editPart}
+          onClose={() => setEditPart(null)}
+          onSaved={async () => {
+            setEditPart(null);
+            await refresh();
+          }}
+          onError={onError}
+        />
+      ) : null}
     </div>
   );
 }
 
-// ------------------------------------------------------------
-// Work Orders
-// ------------------------------------------------------------
+function EditUserModal({ token, user, onClose, onSaved, onError }) {
+  const [name, setName] = React.useState(user.name);
+  const [role, setRole] = React.useState(user.role);
+  const [active, setActive] = React.useState(!!user.is_active);
+
+  return (
+    <Modal title={`Edit User: ${user.name}`} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Name</div>
+          <input value={name} onChange={(e) => setName(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Role</div>
+          <select value={role} onChange={(e) => setRole(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            <option value="assembler">assembler</option>
+            <option value="supervisor">supervisor</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+          <div style={{ fontWeight: 800 }}>Active</div>
+        </label>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={async () => {
+              try {
+                await api(`/users/${user.id}`, { method: "PATCH", token, body: { name, role, is_active: active } });
+                await onSaved();
+              } catch (e) {
+                onError(e.message);
+              }
+            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
+          >
+            Save
+          </button>
+
+          <button onClick={onClose} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function EditPartModal({ token, part, onClose, onSaved, onError }) {
+  const [partNumber, setPartNumber] = React.useState(part.part_number);
+  const [description, setDescription] = React.useState(part.description || "");
+  const [file, setFile] = React.useState(null);
+
+  return (
+    <Modal title={`Edit Part: ${part.part_number}`} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Part Number</div>
+          <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Description</div>
+          <input value={description} onChange={(e) => setDescription(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Replace Instruction File (optional)</div>
+          <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        </label>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            onClick={async () => {
+              try {
+                await api(`/parts/${part.id}`, { method: "PATCH", token, body: { part_number: partNumber, description } });
+                if (file) {
+                  const fd = new FormData();
+                  fd.append("file", file);
+                  const res = await fetch(`${API_BASE}/parts/${part.id}/file`, {
+                    method: "PUT",
+                    headers: { Authorization: `Bearer ${token}` },
+                    body: fd,
+                  });
+                  if (!res.ok) {
+                    let msg = `${res.status} ${res.statusText}`;
+                    try {
+                      const j = await res.json();
+                      if (j?.detail) msg = j.detail;
+                    } catch {}
+                    throw new Error(msg);
+                  }
+                }
+                await onSaved();
+              } catch (e) {
+                onError(e.message);
+              }
+            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
+          >
+            Save
+          </button>
+
+          <button onClick={onClose} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------- Work Orders ----------------
 function WorkOrders({ token, user, onError }) {
-  const [view, setView] = React.useState("open"); // open | closed
+  const [view, setView] = React.useState("open");
   const [wos, setWos] = React.useState([]);
   const [selected, setSelected] = React.useState(null);
 
@@ -581,39 +747,22 @@ function WorkOrders({ token, user, onError }) {
                 setSelected(null);
                 setView("open");
               }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                background: view === "open" ? "#f6f8ff" : "white",
-                fontWeight: view === "open" ? 900 : 700,
-                cursor: "pointer",
-              }}
+              style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #ddd", background: view === "open" ? "#f6f8ff" : "white", cursor: "pointer", fontWeight: 900 }}
             >
               Open
             </button>
-
             <button
               onClick={() => {
                 setSelected(null);
                 setView("closed");
               }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                background: view === "closed" ? "#f6f8ff" : "white",
-                fontWeight: view === "closed" ? 900 : 700,
-                cursor: "pointer",
-              }}
+              style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #ddd", background: view === "closed" ? "#f6f8ff" : "white", cursor: "pointer", fontWeight: 900 }}
             >
               Closed
             </button>
           </div>
 
-          {canCreate && view === "open" ? (
-            <CreateWOButton token={token} onCreated={async () => refresh("open")} onError={onError} />
-          ) : null}
+          {canCreate && view === "open" ? <CreateWOButton token={token} onCreated={async () => refresh("open")} onError={onError} /> : null}
 
           <button
             style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
@@ -640,18 +789,12 @@ function WorkOrders({ token, user, onError }) {
                 <div style={{ opacity: 0.8 }}>{wo.station}</div>
                 <div style={{ marginLeft: "auto", fontSize: 13, opacity: 0.8 }}>{wo.status}</div>
               </div>
-
               <div style={{ marginTop: 6, fontSize: 14 }}>
                 <b>Part:</b> {wo.part_number}{" "}
-                {wo.is_stock ? (
-                  <span style={{ opacity: 0.8 }}>(Stock)</span>
-                ) : (
-                  <span style={{ opacity: 0.8 }}>(Order: {wo.customer_order || "-"})</span>
-                )}
+                {wo.is_stock ? <span style={{ opacity: 0.8 }}>(Stock)</span> : <span style={{ opacity: 0.8 }}>(Order: {wo.customer_order || "-"})</span>}
               </div>
             </div>
           ))}
-
           {wos.length === 0 ? <div style={{ padding: 12, opacity: 0.7 }}>No work orders yet.</div> : null}
         </div>
       </div>
@@ -676,7 +819,6 @@ function CreateWOButton({ token, onCreated, onError }) {
   const [stations, setStations] = React.useState([]);
   const [station, setStation] = React.useState("");
 
-  // Parts dropdown (from /parts)
   const [parts, setParts] = React.useState([]);
   const [partNumber, setPartNumber] = React.useState("");
 
@@ -685,22 +827,15 @@ function CreateWOButton({ token, onCreated, onError }) {
 
   React.useEffect(() => {
     if (!open) return;
-
     (async () => {
       try {
         const s = await api("/stations", { token });
         setStations(s?.stations || []);
         setStation((s?.stations || [])[0] || "");
 
-        // parts might not exist — handle gracefully
-        try {
-          const p = await api("/parts", { token });
-          setParts(p || []);
-          setPartNumber((p?.[0]?.part_number) || "");
-        } catch {
-          setParts([]);
-          setPartNumber("");
-        }
+        const p = await api("/parts", { token });
+        setParts(p || []);
+        setPartNumber((p?.[0]?.part_number) || "");
       } catch (e) {
         onError(e.message);
       }
@@ -715,8 +850,6 @@ function CreateWOButton({ token, onCreated, onError }) {
       </button>
     );
   }
-
-  const hasPartsDropdown = parts.length > 0;
 
   return (
     <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, width: 380, background: "white" }}>
@@ -741,20 +874,13 @@ function CreateWOButton({ token, onCreated, onError }) {
 
         <label style={{ display: "grid", gap: 6 }}>
           <div style={{ fontWeight: 800 }}>Part Number</div>
-
-          {hasPartsDropdown ? (
-            <select value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
-              {parts.map((p) => (
-                <option key={p.id || p.part_number} value={p.part_number}>
-                  {p.part_number}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          )}
-
-          {!hasPartsDropdown ? <div style={{ fontSize: 12, opacity: 0.7 }}>Parts dropdown will appear once the Parts Database is enabled.</div> : null}
+          <select value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            {parts.map((p) => (
+              <option key={p.id} value={p.part_number}>
+                {p.part_number}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -775,14 +901,8 @@ function CreateWOButton({ token, onCreated, onError }) {
               await api("/work-orders", {
                 method: "POST",
                 token,
-                body: {
-                  station,
-                  part_number: partNumber,
-                  customer_order: isStock ? null : customerOrder,
-                  is_stock: isStock,
-                },
+                body: { station, part_number: partNumber, customer_order: isStock ? null : customerOrder, is_stock: isStock },
               });
-
               setCustomerOrder("");
               setIsStock(false);
               setOpen(false);
@@ -806,15 +926,12 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
   const [workers, setWorkers] = React.useState([]);
   const [noteText, setNoteText] = React.useState("");
 
+  const [editOpen, setEditOpen] = React.useState(false);
+
   async function load() {
     const w = await api(`/work-orders/${woId}`, { token });
     const n = await api(`/work-orders/${woId}/notes`, { token });
-    let wk = [];
-    try {
-      wk = await api(`/work-orders/${woId}/workers`, { token });
-    } catch {
-      wk = [];
-    }
+    const wk = await api(`/work-orders/${woId}/workers`, { token });
     setWo(w);
     setNotes(n || []);
     setWorkers(wk || []);
@@ -833,6 +950,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
   const someoneElseCheckedIn = checkedInNames.some((n) => n !== myName);
 
   const isAdminOrSupervisor = user?.role === "admin" || user?.role === "supervisor";
+  const isAdmin = user?.role === "admin";
   const isClosed = (wo.status || "").toLowerCase() === "closed";
   const isComplete = (wo.status || "").toLowerCase() === "complete";
 
@@ -842,6 +960,33 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
         <div style={{ fontWeight: 950, fontSize: 18 }}>{wo.wo_number}</div>
         <div style={{ opacity: 0.8 }}>{wo.station}</div>
         <div style={{ marginLeft: "auto", opacity: 0.8 }}>{wo.status}</div>
+
+        {isAdmin ? (
+          <>
+            <button
+              onClick={() => setEditOpen(true)}
+              style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+            >
+              Edit
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  if (!confirm(`Delete ${wo.wo_number}? This cannot be undone.`)) return;
+                  await api(`/work-orders/${woId}`, { method: "DELETE", token });
+                  await onRefresh();
+                  onClose();
+                } catch (e) {
+                  onError(e.message);
+                }
+              }}
+              style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
+            >
+              Delete
+            </button>
+          </>
+        ) : null}
+
         <button style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }} onClick={onClose}>
           Close Panel
         </button>
@@ -852,7 +997,6 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
         <div><b>Customer Order:</b> {wo.is_stock ? "Stock" : (wo.customer_order || "-")}</div>
       </div>
 
-      {/* Instructions */}
       <div style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 14, background: "#fafafa" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ fontWeight: 950 }}>Work Instructions</div>
@@ -884,14 +1028,12 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
         </div>
       ) : null}
 
-      {/* Actions */}
       <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
         {!isClosed ? (
           <>
             <button
               onClick={async () => {
                 try {
-                  // Backend uses workers/start and workers/stop
                   await api(`/work-orders/${woId}/workers/${isMeCheckedIn ? "stop" : "start"}`, { method: "POST", token });
                   await load();
                   await onRefresh();
@@ -904,7 +1046,6 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               {isMeCheckedIn ? "Check Out" : "Check In"}
             </button>
 
-            {/* Mark complete + Undo complete (must exist in backend; if not you'll see an error message) */}
             {!isComplete ? (
               <button
                 onClick={async () => {
@@ -938,29 +1079,24 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
             )}
 
             {isAdminOrSupervisor ? (
-              <>
-                {!isClosed ? (
-                  <button
-                    onClick={async () => {
-                      try {
-                        await api(`/work-orders/${woId}/close`, { method: "POST", token });
-                        await load();
-                        await onRefresh();
-                      } catch (e) {
-                        onError(e.message);
-                      }
-                    }}
-                    style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #0b5", background: "#0b5", color: "white", cursor: "pointer", fontWeight: 950 }}
-                  >
-                    Close Work Order
-                  </button>
-                ) : null}
-              </>
+              <button
+                onClick={async () => {
+                  try {
+                    await api(`/work-orders/${woId}/close`, { method: "POST", token });
+                    await load();
+                    await onRefresh();
+                  } catch (e) {
+                    onError(e.message);
+                  }
+                }}
+                style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #0b5", background: "#0b5", color: "white", cursor: "pointer", fontWeight: 950 }}
+              >
+                Close Work Order
+              </button>
             ) : null}
           </>
         ) : null}
 
-        {/* Reopen (Supervisor/Admin) */}
         {isAdminOrSupervisor && isClosed ? (
           <button
             onClick={async () => {
@@ -977,17 +1113,14 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
             Reopen Work Order
           </button>
         ) : null}
-
-        {isClosed ? <div style={{ opacity: 0.8, fontWeight: 800 }}>{pill("CLOSED", "#e8fff2")}</div> : null}
       </div>
 
-      {/* Workers */}
       <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 14 }}>
         <div style={{ fontWeight: 950, marginBottom: 8 }}>Workers Checked In</div>
         {workers.length === 0 ? <div style={{ opacity: 0.7 }}>No one is checked in.</div> : null}
         <div style={{ display: "grid", gap: 8 }}>
           {workers.map((w) => (
-            <div key={w.user_id || w.name} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10 }}>
+            <div key={w.user_id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10 }}>
               <div style={{ fontWeight: 950 }}>{w.name}</div>
               <div style={{ opacity: 0.8 }}>{w.role}</div>
               <div style={{ marginLeft: "auto", opacity: 0.8 }}>{w.started_at ? new Date(w.started_at).toLocaleString() : ""}</div>
@@ -996,7 +1129,6 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
         </div>
       </div>
 
-      {/* Notes */}
       <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 14 }}>
         <div style={{ fontWeight: 950, marginBottom: 8 }}>Notes</div>
 
@@ -1007,7 +1139,6 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
             placeholder="Add a note…"
             style={{ width: "100%", minHeight: 90, padding: 12, borderRadius: 14, border: "1px solid #ddd" }}
           />
-
           <button
             onClick={async () => {
               try {
@@ -1039,7 +1170,122 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           {notes.length === 0 ? <div style={{ opacity: 0.7 }}>No notes yet.</div> : null}
         </div>
       </div>
+
+      {editOpen ? (
+        <EditWorkOrderModal
+          token={token}
+          wo={wo}
+          onClose={() => setEditOpen(false)}
+          onSaved={async () => {
+            setEditOpen(false);
+            await load();
+            await onRefresh();
+          }}
+          onError={onError}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function EditWorkOrderModal({ token, wo, onClose, onSaved, onError }) {
+  const [stations, setStations] = React.useState([]);
+  const [parts, setParts] = React.useState([]);
+
+  const [station, setStation] = React.useState(wo.station);
+  const [partNumber, setPartNumber] = React.useState(wo.part_number);
+  const [isStock, setIsStock] = React.useState(!!wo.is_stock);
+  const [customerOrder, setCustomerOrder] = React.useState(wo.customer_order || "");
+  const [status, setStatus] = React.useState(wo.status);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const s = await api("/stations", { token });
+        setStations(s?.stations || []);
+        const p = await api("/parts", { token });
+        setParts(p || []);
+      } catch (e) {
+        onError(e.message);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <Modal title={`Edit ${wo.wo_number}`} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Station</div>
+          <select value={station} onChange={(e) => setStation(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            {stations.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Part Number</div>
+          <select value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            {parts.map((p) => (
+              <option key={p.id} value={p.part_number}>{p.part_number}</option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
+          <div style={{ fontWeight: 800 }}>Stock</div>
+        </label>
+
+        {!isStock ? (
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontWeight: 800 }}>Customer Order</div>
+            <input value={customerOrder} onChange={(e) => setCustomerOrder(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+          </label>
+        ) : null}
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Status</div>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            <option value="open">open</option>
+            <option value="in_progress">in_progress</option>
+            <option value="complete">complete</option>
+            <option value="closed">closed</option>
+          </select>
+        </label>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={async () => {
+              try {
+                await api(`/work-orders/${wo.id}`, {
+                  method: "PATCH",
+                  token,
+                  body: {
+                    station,
+                    part_number: partNumber,
+                    is_stock: isStock,
+                    customer_order: isStock ? "" : customerOrder,
+                    status,
+                  },
+                });
+                await onSaved();
+              } catch (e) {
+                onError(e.message);
+              }
+            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
+          >
+            Save
+          </button>
+
+          <button onClick={onClose} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
