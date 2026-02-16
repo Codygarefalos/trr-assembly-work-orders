@@ -40,7 +40,7 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
-# Render-safe hash (no bcrypt dependency issues)
+# Stable on Render (no bcrypt issues)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
@@ -76,16 +76,9 @@ class WorkOrder(Base):
 
     # open | in_progress | complete | closed
     status: Mapped[str] = mapped_column(String(30), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-    )
-
-    notes: Mapped[List["WorkOrderNote"]] = relationship(
-        back_populates="work_order",
-        cascade="all, delete-orphan",
-    )
+    notes: Mapped[List["WorkOrderNote"]] = relationship(back_populates="work_order", cascade="all, delete-orphan")
 
 
 class WorkOrderNote(Base):
@@ -97,11 +90,7 @@ class WorkOrderNote(Base):
 
     station: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     text: Mapped[str] = mapped_column(Text)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     work_order: Mapped["WorkOrder"] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship(back_populates="notes")
@@ -114,10 +103,7 @@ class WorkOrderWorker(Base):
     work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
 
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     work_order: Mapped["WorkOrder"] = relationship()
@@ -245,6 +231,11 @@ class WOOut(BaseModel):
     created_at: datetime
 
 
+class CloseWOResponse(BaseModel):
+    ok: bool
+    status: str
+
+
 class AddNoteRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
@@ -264,11 +255,6 @@ class WorkerOut(BaseModel):
     role: str
     started_at: datetime
     is_checked_in: bool
-
-
-class CloseWOResponse(BaseModel):
-    ok: bool
-    status: str
 
 
 # -----------------------------
@@ -343,10 +329,14 @@ def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_
 # -----------------------------
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.execute(select(User).where(User.name == payload.name.strip())).scalar_one_or_none()
+    name = payload.name.strip()
+    pin = payload.pin.strip()
+
+    user = db.execute(select(User).where(User.name == name)).scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid name or PIN")
-    if not verify_pin(payload.pin.strip(), user.pin_hash):
+
+    if not verify_pin(pin, user.pin_hash):
         raise HTTPException(status_code=401, detail="Invalid name or PIN")
 
     return LoginResponse(token=create_token(user), name=user.name, role=user.role)
@@ -563,9 +553,15 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
 
 
 # -----------------------------
-# Workers (the routes your FRONTEND expects)
+# Workers (check in/out + warning)
 # -----------------------------
-def _active_workers_for_wo(db: Session, wo_id: int) -> List[WorkerOut]:
+@app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
+def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    # list everyone who has an ACTIVE row (ended_at is null)
     rows = (
         db.execute(
             select(WorkOrderWorker, User)
@@ -591,21 +587,14 @@ def _active_workers_for_wo(db: Session, wo_id: int) -> List[WorkerOut]:
     return out
 
 
-@app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
-def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
+@app.post("/work-orders/{wo_id}/workers/start", response_model=OkResponse)
+def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
-    return _active_workers_for_wo(db, wo_id)
 
-
-@app.post("/work-orders/{wo_id}/check-in", response_model=List[WorkerOut])
-def check_in(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    wo = db.get(WorkOrder, wo_id)
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
     if wo.status == "closed":
-        raise HTTPException(status_code=400, detail="Work order is closed")
+        raise HTTPException(status_code=400, detail="Work order is closed. Reopen first.")
 
     existing = db.execute(
         select(WorkOrderWorker)
@@ -620,11 +609,11 @@ def check_in(wo_id: int, user: User = Depends(require_user), db: Session = Depen
             wo.status = "in_progress"
         db.commit()
 
-    return _active_workers_for_wo(db, wo_id)
+    return OkResponse(ok=True)
 
 
-@app.post("/work-orders/{wo_id}/check-out", response_model=OkResponse)
-def check_out(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+@app.post("/work-orders/{wo_id}/workers/stop", response_model=OkResponse)
+def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
@@ -644,22 +633,58 @@ def check_out(wo_id: int, user: User = Depends(require_user), db: Session = Depe
     return OkResponse(ok=True)
 
 
+# Compatibility endpoints (your frontend calls these)
+@app.post("/work-orders/{wo_id}/check-in", response_model=OkResponse)
+def check_in(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    return start_working_on_wo(wo_id, user, db)
+
+
+@app.post("/work-orders/{wo_id}/check-out", response_model=OkResponse)
+def check_out(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    return stop_working_on_wo(wo_id, user, db)
+
+
 # -----------------------------
-# Status transitions (match your UI buttons)
+# Status actions (complete/close + undo)
 # -----------------------------
 @app.post("/work-orders/{wo_id}/mark-complete", response_model=CloseWOResponse)
 def mark_complete(
     wo_id: int,
-    _u: User = Depends(require_role("assembler", "supervisor", "admin")),
+    _u: User = Depends(require_role("admin", "supervisor", "assembler")),
     db: Session = Depends(get_db),
 ):
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+
     if wo.status == "closed":
-        raise HTTPException(status_code=400, detail="Work order is already closed")
+        raise HTTPException(status_code=400, detail="Work order is closed. Reopen first.")
 
     wo.status = "complete"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/uncomplete", response_model=CloseWOResponse)
+def uncomplete(
+    wo_id: int,
+    _u: User = Depends(require_role("admin", "supervisor", "assembler")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    if wo.status != "complete":
+        raise HTTPException(status_code=400, detail="Work order is not marked complete")
+
+    active = db.execute(
+        select(func.count(WorkOrderWorker.id))
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar() or 0
+
+    wo.status = "in_progress" if active > 0 else "open"
     db.commit()
     return CloseWOResponse(ok=True, status=wo.status)
 
@@ -674,16 +699,33 @@ def close_work_order(
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    # end everyone still checked in
-    now = datetime.now(timezone.utc)
-    active_rows = db.execute(
-        select(WorkOrderWorker)
-        .where(WorkOrderWorker.work_order_id == wo_id)
-        .where(WorkOrderWorker.ended_at.is_(None))
-    ).scalars().all()
-    for r in active_rows:
-        r.ended_at = now
+    if wo.status != "complete":
+        raise HTTPException(status_code=400, detail="Work order must be marked complete before closing")
 
     wo.status = "closed"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
+
+
+@app.post("/work-orders/{wo_id}/reopen", response_model=CloseWOResponse)
+def reopen_work_order(
+    wo_id: int,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    if wo.status != "closed":
+        raise HTTPException(status_code=400, detail="Work order is not closed")
+
+    active = db.execute(
+        select(func.count(WorkOrderWorker.id))
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar() or 0
+
+    wo.status = "in_progress" if active > 0 else "open"
     db.commit()
     return CloseWOResponse(ok=True, status=wo.status)
