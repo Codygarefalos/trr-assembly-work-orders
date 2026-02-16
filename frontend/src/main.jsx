@@ -172,17 +172,27 @@ function Login({ onLogin, onError }) {
 
 function AdminPanel({ token, user, onError }) {
   const [users, setUsers] = React.useState([]);
+
+  // user creation
   const [name, setName] = React.useState("");
   const [role, setRole] = React.useState("assembler");
   const [pin, setPin] = React.useState("");
 
+  // reset
   const [resetName, setResetName] = React.useState("");
   const [resetPin, setResetPin] = React.useState("");
   const [resetToken, setResetToken] = React.useState("");
 
+  // parts
+  const [parts, setParts] = React.useState([]);
+  const [partNumber, setPartNumber] = React.useState("");
+  const [partFile, setPartFile] = React.useState(null);
+
   async function refresh() {
-    const data = await api("/users", { token });
-    setUsers(data);
+    const u = await api("/users", { token });
+    setUsers(u);
+    const p = await api("/parts", { token });
+    setParts(p);
   }
 
   React.useEffect(() => {
@@ -308,6 +318,105 @@ function AdminPanel({ token, user, onError }) {
         ))}
         {users.length === 0 ? <div style={{ padding: 12, opacity: 0.7 }}>No users yet.</div> : null}
       </div>
+
+      {/* Parts / Instructions */}
+      <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Parts / Work Instructions</h3>
+        <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
+          Upload a file for a Part Number. Work orders using that part will automatically show the link.
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Upload / Replace Instructions</div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <label>
+                Part Number
+                <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
+              </label>
+
+              <label>
+                File
+                <input type="file" onChange={(e) => setPartFile(e.target.files?.[0] || null)} />
+              </label>
+
+              <button
+                onClick={async () => {
+                  try {
+                    if (!partNumber.trim()) throw new Error("Part Number is required");
+                    if (!partFile) throw new Error("Choose a file to upload");
+
+                    const fd = new FormData();
+                    fd.append("part_number", partNumber.trim());
+                    fd.append("file", partFile);
+
+                    const res = await fetch(`${API_BASE}/parts/upload`, {
+                      method: "POST",
+                      headers: { Authorization: `Bearer ${token}` },
+                      body: fd,
+                    });
+
+                    if (!res.ok) {
+                      let msg = `${res.status} ${res.statusText}`;
+                      try {
+                        const j = await res.json();
+                        if (j?.detail) msg = j.detail;
+                      } catch {}
+                      throw new Error(msg);
+                    }
+
+                    setPartNumber("");
+                    setPartFile(null);
+                    await refresh();
+                  } catch (e) {
+                    onError(e.message);
+                  }
+                }}
+                style={{ padding: 12, borderRadius: 10, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer" }}
+              >
+                Upload
+              </button>
+            </div>
+          </div>
+
+          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Saved Parts</div>
+
+            <div style={{ display: "grid", gap: 10, maxHeight: 320, overflow: "auto" }}>
+              {parts.map((p) => (
+                <div key={p.id} style={{ border: "1px solid #eee", borderRadius: 12, padding: 10 }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ fontWeight: 900 }}>{p.part_number}</div>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+                      <a href={`${API_BASE}${p.instruction_url}`} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                        Open
+                      </a>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api(`/parts/${p.id}`, { method: "DELETE", token });
+                            await refresh();
+                          } catch (e) {
+                            onError(e.message);
+                          }
+                        }}
+                        style={{ border: "1px solid #ddd", borderRadius: 10, padding: "6px 10px", cursor: "pointer" }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ opacity: 0.75, fontSize: 13, marginTop: 6 }}>
+                    {p.filename} • uploaded by {p.uploaded_by} • {new Date(p.uploaded_at).toLocaleString()}
+                  </div>
+                </div>
+              ))}
+              {parts.length === 0 ? <div style={{ opacity: 0.7 }}>No parts uploaded yet.</div> : null}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -400,6 +509,7 @@ function WorkOrders({ token, user, onError }) {
                 <b>Part:</b> {wo.part_number}{" "}
                 {wo.is_stock ? <span style={{ opacity: 0.8 }}>(Stock)</span> : <span style={{ opacity: 0.8 }}>(Order: {wo.customer_order || "-"})</span>}
               </div>
+              {wo.instruction_url ? <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>📎 Instructions: {wo.instruction_filename || "Available"}</div> : null}
             </div>
           ))}
           {wos.length === 0 ? <div style={{ padding: 12, opacity: 0.7 }}>No work orders yet.</div> : null}
@@ -555,6 +665,19 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
         <div><b>Part #:</b> {wo.part_number}</div>
         <div><b>Customer Order:</b> {wo.is_stock ? "Stock" : (wo.customer_order || "-")}</div>
       </div>
+
+      {wo.instruction_url ? (
+        <div style={{ marginTop: 12, padding: 10, border: "1px solid #e7eefc", background: "#f6f8ff", borderRadius: 10 }}>
+          📎 <b>Work Instructions:</b>{" "}
+          <a href={`${API_BASE}${wo.instruction_url}`} target="_blank" rel="noreferrer">
+            {wo.instruction_filename || "Open Instructions"}
+          </a>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, padding: 10, border: "1px solid #eee", background: "#fafafa", borderRadius: 10, opacity: 0.8 }}>
+          No work instructions uploaded for this part number yet.
+        </div>
+      )}
 
       {someoneElseCheckedIn ? (
         <div style={{ marginTop: 12, padding: 10, border: "1px solid #f2d08a", background: "#fff8e8", borderRadius: 10 }}>
