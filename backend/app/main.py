@@ -304,31 +304,32 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     return LoginResponse(token=create_token(user), name=user.name, role=user.role)
 
-
 @app.post("/bootstrap/admin", response_model=UserOut)
-def bootstrap_first_admin(req: BootstrapAdminRequest, db: Session = Depends(get_db)):
-raise HTTPException(status_code=403, detail="Bootstrap disabled")
+def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_db)):
     """
-    One-time endpoint to create the first admin user.
-    Only works if there are 0 users in the database.
+    One-time endpoint to create the very first admin if no users exist.
+    After the first user exists, it is disabled.
     """
-    existing_count = db.execute(select(func.count()).select_from(User)).scalar_one()
-    if existing_count != 0:
-        raise HTTPException(status_code=403, detail="Bootstrap disabled (users already exist)")
+    # If any user exists, disable bootstrap
+    existing_any = db.execute(select(User).limit(1)).scalar_one_or_none()
+    if existing_any:
+        raise HTTPException(status_code=403, detail="Bootstrap disabled")
 
-    pin = req.pin.strip()
-    if not re.fullmatch(r"\d{4,6}", pin):
-        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
+    role = payload.role.strip().lower()
+    if role not in ("admin", "supervisor", "assembler"):
+        raise HTTPException(status_code=400, detail="role must be assembler, supervisor, or admin")
 
+    # Force first user to be admin regardless of payload role (safer)
     u = User(
-        name=req.name.strip(),
+        name=payload.name.strip(),
         role="admin",
-        pin_hash=hash_pin(pin),
+        pin_hash=hash_pin(payload.pin.strip()),
         is_active=True,
     )
     db.add(u)
     db.commit()
     db.refresh(u)
+
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
 
