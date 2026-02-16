@@ -5,12 +5,13 @@ import logo from "./assets/logo.png";
 const API_BASE = (import.meta.env.VITE_API_BASE || "https://trr-assembly-api.onrender.com").replace(/\/+$/, "");
 const IDLE_LOGOUT_MINUTES = 30;
 
-async function api(path, { method = "GET", token, body } = {}) {
+async function api(path, { method = "GET", token, body, headers = {} } = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -24,13 +25,23 @@ async function api(path, { method = "GET", token, body } = {}) {
     throw new Error(msg);
   }
 
-  // some endpoints return {ok:true}
+  // some endpoints return empty body or {ok:true}
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }
 
-function useIdleLogout(onLogout) {
+function safeParseJSON(raw) {
+  try {
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function useIdleLogout(enabled, onLogout) {
   React.useEffect(() => {
+    if (!enabled) return;
+
     let t = null;
     const reset = () => {
       if (t) clearTimeout(t);
@@ -45,50 +56,59 @@ function useIdleLogout(onLogout) {
       if (t) clearTimeout(t);
       events.forEach((e) => window.removeEventListener(e, reset));
     };
-  }, [onLogout]);
+  }, [enabled, onLogout]);
 }
 
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem("trr_token") || "");
-  const [user, setUser] = React.useState(() => {
-    const raw = localStorage.getItem("trr_user");
-    return raw ? JSON.parse(raw) : null;
-  });
+  const [user, setUser] = React.useState(() => safeParseJSON(localStorage.getItem("trr_user")));
   const [page, setPage] = React.useState("workorders"); // workorders | admin
   const [error, setError] = React.useState("");
 
-  useIdleLogout(() => {
-    if (token) {
-      localStorage.removeItem("trr_token");
-      localStorage.removeItem("trr_user");
-      setToken("");
-      setUser(null);
-      setPage("workorders");
-      setError("Logged out due to inactivity.");
-    }
-  });
+  const isAuthed = Boolean(token && user);
 
-  async function onLogin(name, pin) {
-    setError("");
-    const data = await api("/auth/login", { method: "POST", body: { name, pin } });
-    setToken(data.token);
-    const u = { name: data.name, role: data.role };
-    setUser(u);
-    localStorage.setItem("trr_token", data.token);
-    localStorage.setItem("trr_user", JSON.stringify(u));
-  }
-
-  function logout() {
+  function hardLogout(message) {
     localStorage.removeItem("trr_token");
     localStorage.removeItem("trr_user");
     setToken("");
     setUser(null);
     setPage("workorders");
+    if (message) setError(message);
+  }
+
+  // If token exists but user is missing/bad, clear it so we don't crash.
+  React.useEffect(() => {
+    if (token && !user) {
+      hardLogout("Session data was incomplete. Please log in again.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useIdleLogout(isAuthed, () => {
+    hardLogout("Logged out due to inactivity.");
+  });
+
+  async function onLogin(name, pin) {
+    setError("");
+    const data = await api("/auth/login", { method: "POST", body: { name, pin } });
+
+    const u = { name: data.name, role: data.role };
+    setToken(data.token);
+    setUser(u);
+
+    localStorage.setItem("trr_token", data.token);
+    localStorage.setItem("trr_user", JSON.stringify(u));
   }
 
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      <Header user={user} onLogout={logout} page={page} setPage={setPage} />
+      <Header
+        user={user}
+        isAuthed={isAuthed}
+        onLogout={() => hardLogout("")}
+        page={page}
+        setPage={setPage}
+      />
 
       {error ? (
         <div style={{ marginTop: 12, padding: 10, border: "1px solid #f2c2c2", background: "#fff5f5", borderRadius: 10, color: "#7a0000" }}>
@@ -97,7 +117,7 @@ function App() {
       ) : null}
 
       <div style={{ marginTop: 16 }}>
-        {!token ? (
+        {!isAuthed ? (
           <Login onLogin={onLogin} onError={setError} />
         ) : page === "admin" && (user?.role === "admin" || user?.role === "supervisor") ? (
           <AdminPanel token={token} user={user} onError={setError} />
@@ -109,16 +129,18 @@ function App() {
   );
 }
 
-function Header({ user, onLogout, page, setPage }) {
+function Header({ user, isAuthed, onLogout, page, setPage }) {
+  const canAdmin = user?.role === "admin" || user?.role === "supervisor";
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
       <img src={logo} alt="TRR" style={{ height: 40, width: "auto" }} />
       <div style={{ fontWeight: 900, fontSize: 18 }}>TRR Assembly Work Orders</div>
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-        {user ? <div style={{ opacity: 0.85 }}>{user.name} ({user.role})</div> : null}
+        {isAuthed ? <div style={{ opacity: 0.85 }}>{user?.name} ({user?.role})</div> : null}
 
-        {user && (user.role === "admin" || user.role === "supervisor") ? (
+        {isAuthed && canAdmin ? (
           <button
             onClick={() => setPage(page === "admin" ? "workorders" : "admin")}
             style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
@@ -127,7 +149,7 @@ function Header({ user, onLogout, page, setPage }) {
           </button>
         ) : null}
 
-        {user ? (
+        {isAuthed ? (
           <button onClick={onLogout} style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}>
             Logout
           </button>
@@ -171,7 +193,9 @@ function Login({ onLogin, onError }) {
 }
 
 function AdminPanel({ token, user, onError }) {
+  const canCreateUsers = user?.role === "admin";
   const [users, setUsers] = React.useState([]);
+
   const [name, setName] = React.useState("");
   const [role, setRole] = React.useState("assembler");
   const [pin, setPin] = React.useState("");
@@ -183,7 +207,7 @@ function AdminPanel({ token, user, onError }) {
 
   async function refresh() {
     const data = await api("/users", { token });
-    setUsers(data);
+    setUsers(data || []);
   }
 
   React.useEffect(() => {
@@ -195,7 +219,10 @@ function AdminPanel({ token, user, onError }) {
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h2 style={{ margin: 0 }}>Admin</h2>
-        <button style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }} onClick={() => refresh().catch((e) => onError(e.message))}>
+        <button
+          style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
+          onClick={() => refresh().catch((e) => onError(e.message))}
+        >
           Refresh
         </button>
       </div>
@@ -203,13 +230,14 @@ function AdminPanel({ token, user, onError }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
           <h3 style={{ marginTop: 0 }}>Create User (Admin only)</h3>
-          {user.role !== "admin" ? <div style={{ opacity: 0.7 }}>Only admins can create users.</div> : null}
+          {!canCreateUsers ? <div style={{ opacity: 0.7 }}>Only admins can create users.</div> : null}
 
           <div style={{ display: "grid", gap: 10 }}>
             <label>
               Name
               <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
             </label>
+
             <label>
               Role
               <select value={role} onChange={(e) => setRole(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}>
@@ -218,13 +246,14 @@ function AdminPanel({ token, user, onError }) {
                 <option value="admin">admin</option>
               </select>
             </label>
+
             <label>
               PIN (4–6 digits)
               <input value={pin} onChange={(e) => setPin(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
             </label>
 
             <button
-              disabled={user.role !== "admin"}
+              disabled={!canCreateUsers}
               onClick={async () => {
                 try {
                   await api("/users", { method: "POST", token, body: { name, role, pin } });
@@ -236,7 +265,14 @@ function AdminPanel({ token, user, onError }) {
                   onError(e.message);
                 }
               }}
-              style={{ padding: 12, borderRadius: 10, border: "1px solid #111", background: user.role === "admin" ? "#111" : "#888", color: "white", cursor: user.role === "admin" ? "pointer" : "not-allowed" }}
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid #111",
+                background: canCreateUsers ? "#111" : "#888",
+                color: "white",
+                cursor: canCreateUsers ? "pointer" : "not-allowed",
+              }}
             >
               Create User
             </button>
@@ -246,7 +282,7 @@ function AdminPanel({ token, user, onError }) {
         <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
           <h3 style={{ marginTop: 0 }}>Reset User PIN (Admin only)</h3>
           <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
-            You must enter the backend RESET_TOKEN (stored in Render) to reset PINs.
+            Enter the backend RESET_TOKEN (stored in Render) to reset PINs.
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
@@ -254,36 +290,26 @@ function AdminPanel({ token, user, onError }) {
               RESET_TOKEN
               <input value={resetToken} onChange={(e) => setResetToken(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
             </label>
+
             <label>
               User Name
               <input value={resetName} onChange={(e) => setResetName(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
             </label>
+
             <label>
               New PIN (4–6 digits)
               <input value={resetPin} onChange={(e) => setResetPin(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }} />
             </label>
 
             <button
-              disabled={user.role !== "admin"}
+              disabled={!canCreateUsers}
               onClick={async () => {
                 try {
-                  // Reset endpoint uses X-Reset-Token header
-                  const res = await fetch(`${API_BASE}/admin/reset-pin`, {
+                  await api("/admin/reset-pin", {
                     method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      "X-Reset-Token": resetToken,
-                    },
-                    body: JSON.stringify({ name: resetName, new_pin: resetPin }),
+                    body: { name: resetName, new_pin: resetPin },
+                    headers: { "X-Reset-Token": resetToken },
                   });
-                  if (!res.ok) {
-                    let msg = `${res.status} ${res.statusText}`;
-                    try {
-                      const j = await res.json();
-                      if (j?.detail) msg = j.detail;
-                    } catch {}
-                    throw new Error(msg);
-                  }
 
                   setResetName("");
                   setResetPin("");
@@ -292,7 +318,14 @@ function AdminPanel({ token, user, onError }) {
                   onError(e.message);
                 }
               }}
-              style={{ padding: 12, borderRadius: 10, border: "1px solid #111", background: user.role === "admin" ? "#111" : "#888", color: "white", cursor: user.role === "admin" ? "pointer" : "not-allowed" }}
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid #111",
+                background: canCreateUsers ? "#111" : "#888",
+                color: "white",
+                cursor: canCreateUsers ? "pointer" : "not-allowed",
+              }}
             >
               Reset PIN
             </button>
@@ -320,11 +353,23 @@ function WorkOrders({ token, user, onError }) {
   const [wos, setWos] = React.useState([]);
   const [selected, setSelected] = React.useState(null);
 
+  const canCreateWO = user?.role === "admin" || user?.role === "supervisor";
+
   async function refresh(nextView) {
     const v = nextView || view;
+
+    // If your backend supports ?status=closed, great. If not, it will error and we'll fallback.
     const path = v === "closed" ? "/work-orders?status=closed" : "/work-orders";
-    const data = await api(path, { token });
-    setWos(data);
+
+    try {
+      const data = await api(path, { token });
+      setWos(data || []);
+    } catch (e) {
+      // fallback: load all and filter client-side
+      const data = await api("/work-orders", { token });
+      const all = data || [];
+      setWos(v === "closed" ? all.filter((x) => x.status === "closed") : all.filter((x) => x.status !== "closed"));
+    }
   }
 
   React.useEffect(() => {
@@ -355,6 +400,7 @@ function WorkOrders({ token, user, onError }) {
             >
               Open
             </button>
+
             <button
               onClick={() => {
                 setSelected(null);
@@ -373,11 +419,14 @@ function WorkOrders({ token, user, onError }) {
             </button>
           </div>
 
-          {(user.role === "admin" || user.role === "supervisor") && view === "open" ? (
+          {canCreateWO && view === "open" ? (
             <CreateWOButton token={token} onCreated={async () => refresh("open")} onError={onError} />
           ) : null}
 
-          <button style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }} onClick={() => refresh().catch((e) => onError(e.message))}>
+          <button
+            style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #ddd", cursor: "pointer" }}
+            onClick={() => refresh().catch((e) => onError(e.message))}
+          >
             Refresh
           </button>
         </div>
@@ -399,9 +448,14 @@ function WorkOrders({ token, user, onError }) {
                 <div style={{ opacity: 0.8 }}>{wo.station}</div>
                 <div style={{ marginLeft: "auto", fontSize: 13, opacity: 0.8 }}>{wo.status}</div>
               </div>
+
               <div style={{ marginTop: 6, fontSize: 14 }}>
                 <b>Part:</b> {wo.part_number}{" "}
-                {wo.is_stock ? <span style={{ opacity: 0.8 }}>(Stock)</span> : <span style={{ opacity: 0.8 }}>(Order: {wo.customer_order || "-"})</span>}
+                {wo.is_stock ? (
+                  <span style={{ opacity: 0.8 }}>(Stock)</span>
+                ) : (
+                  <span style={{ opacity: 0.8 }}>(Order: {wo.customer_order || "-"})</span>
+                )}
               </div>
             </div>
           ))}
@@ -435,8 +489,9 @@ function CreateWOButton({ token, onCreated, onError }) {
     if (!open) return;
     api("/stations", { token })
       .then((d) => {
-        setStations(d.stations || []);
-        setStation((d.stations || [])[0] || "");
+        const list = d?.stations || [];
+        setStations(list);
+        setStation(list[0] || "");
       })
       .catch((e) => onError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -464,7 +519,9 @@ function CreateWOButton({ token, onCreated, onError }) {
           Station
           <select value={station} onChange={(e) => setStation(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}>
             {stations.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
         </label>
@@ -528,8 +585,8 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
     const n = await api(`/work-orders/${woId}/notes`, { token });
     const wk = await api(`/work-orders/${woId}/workers`, { token });
     setWo(w);
-    setNotes(n);
-    setWorkers(wk);
+    setNotes(n || []);
+    setWorkers(wk || []);
   }
 
   React.useEffect(() => {
@@ -539,9 +596,12 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
 
   if (!wo) return <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 14 }}>Loading…</div>;
 
+  const myName = user?.name || "";
   const checkedInNames = workers.filter((w) => w.is_checked_in).map((w) => w.name);
-  const isMeCheckedIn = workers.some((w) => w.name === user.name && w.is_checked_in);
-  const someoneElseCheckedIn = checkedInNames.some((n) => n !== user.name);
+  const isMeCheckedIn = workers.some((w) => w.name === myName && w.is_checked_in);
+  const someoneElseCheckedIn = checkedInNames.some((n) => n !== myName);
+
+  const canClose = user?.role === "admin" || user?.role === "supervisor";
 
   return (
     <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
@@ -561,7 +621,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
 
       {someoneElseCheckedIn ? (
         <div style={{ marginTop: 12, padding: 10, border: "1px solid #f2d08a", background: "#fff8e8", borderRadius: 10 }}>
-          ⚠ Someone else is currently working on this WO: <b>{checkedInNames.filter((n) => n !== user.name).join(", ")}</b>
+          ⚠ Someone else is currently working on this WO: <b>{checkedInNames.filter((n) => n !== myName).join(", ")}</b>
         </div>
       ) : null}
 
@@ -598,7 +658,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               Mark Complete (Assembler)
             </button>
 
-            {(user.role === "admin" || user.role === "supervisor") ? (
+            {canClose ? (
               <button
                 onClick={async () => {
                   try {
