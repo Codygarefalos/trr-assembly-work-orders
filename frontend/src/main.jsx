@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "https://trr-assembly-api.onrender.com").replace(/\/+$/,"");
 const IDLE_LOGOUT_MINUTES = 30;
 
 async function api(path, { method = "GET", token, body } = {}) {
