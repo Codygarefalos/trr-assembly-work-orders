@@ -26,9 +26,6 @@ TOKEN_TTL_HOURS = 12
 
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 
-INIT_ADMIN_NAME = os.getenv("INIT_ADMIN_NAME", "").strip()
-INIT_ADMIN_PIN = os.getenv("INIT_ADMIN_PIN", "").strip()
-
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL env var is required")
 if not JWT_SECRET:
@@ -169,6 +166,11 @@ class LoginResponse(BaseModel):
     role: str
 
 
+class BootstrapAdminRequest(BaseModel):
+    name: str
+    pin: str = Field(min_length=4, max_length=6)
+
+
 class CreateUserRequest(BaseModel):
     name: str
     role: str  # assembler|supervisor|admin
@@ -252,20 +254,6 @@ def startup():
     # Create tables
     Base.metadata.create_all(engine)
 
-    # Optional: seed initial admin if none exists
-    if INIT_ADMIN_NAME and INIT_ADMIN_PIN:
-        with Session(engine) as db:
-            any_admin = db.execute(select(User).where(User.role == "admin")).scalar_one_or_none()
-            if not any_admin:
-                u = User(
-                    name=INIT_ADMIN_NAME,
-                    role="admin",
-                    pin_hash=hash_pin(INIT_ADMIN_PIN),
-                    is_active=True,
-                )
-                db.add(u)
-                db.commit()
-
 
 @app.get("/health")
 def health():
@@ -286,6 +274,32 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return LoginResponse(token=create_token(user), name=user.name, role=user.role)
 
 
+@app.post("/bootstrap/admin", response_model=UserOut)
+def bootstrap_first_admin(req: BootstrapAdminRequest, db: Session = Depends(get_db)):
+    """
+    One-time endpoint to create the first admin user.
+    Only works if there are 0 users in the database.
+    """
+    existing_count = db.execute(select(func.count()).select_from(User)).scalar_one()
+    if existing_count != 0:
+        raise HTTPException(status_code=403, detail="Bootstrap disabled (users already exist)")
+
+    pin = req.pin.strip()
+    if not re.fullmatch(r"\d{4,6}", pin):
+        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
+
+    u = User(
+        name=req.name.strip(),
+        role="admin",
+        pin_hash=hash_pin(pin),
+        is_active=True,
+    )
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
+
+
 @app.get("/users", response_model=List[UserOut])
 def list_users(_admin: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
     users = db.execute(select(User).order_by(User.name.asc())).scalars().all()
@@ -302,7 +316,11 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     if existing:
         raise HTTPException(status_code=400, detail="User name already exists")
 
-    u = User(name=req.name, role=role, pin_hash=hash_pin(req.pin), is_active=True)
+    pin = req.pin.strip()
+    if not re.fullmatch(r"\d{4,6}", pin):
+        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
+
+    u = User(name=req.name.strip(), role=role, pin_hash=hash_pin(pin), is_active=True)
     db.add(u)
     db.commit()
     db.refresh(u)
