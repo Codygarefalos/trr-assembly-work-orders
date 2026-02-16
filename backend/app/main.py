@@ -11,7 +11,14 @@ from jose import jwt, JWTError
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    create_engine, String, DateTime, Integer, Text, ForeignKey, select, func
+    create_engine,
+    String,
+    DateTime,
+    Integer,
+    Text,
+    ForeignKey,
+    select,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 
@@ -31,7 +38,8 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use PBKDF2 (stable on Render, no bcrypt backend issues)
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 # -----------------------------
@@ -70,6 +78,20 @@ class WorkOrder(Base):
     notes: Mapped[List["WorkOrderNote"]] = relationship(back_populates="work_order", cascade="all, delete-orphan")
 
 
+class WorkOrderNote(Base):
+    __tablename__ = "work_order_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
+    author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+    station: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    work_order: Mapped["WorkOrder"] = relationship(back_populates="notes")
+    author: Mapped["User"] = relationship(back_populates="notes")
+
 
 class WorkOrderWorker(Base):
     __tablename__ = "work_order_workers"
@@ -84,17 +106,6 @@ class WorkOrderWorker(Base):
     work_order: Mapped["WorkOrder"] = relationship()
     user: Mapped["User"] = relationship()
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
-    author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-
-    station: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
-    text: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    work_order: Mapped["WorkOrder"] = relationship(back_populates="notes")
-    author: Mapped["User"] = relationship(back_populates="notes")
-
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 
@@ -107,26 +118,12 @@ def get_db():
 # -----------------------------
 # Auth helpers
 # -----------------------------
-def normalize_pin(pin: str) -> str:
-    # Remove spaces or hidden characters and keep only digits
-    p = (pin or "").strip()
-    p = re.sub(r"\D", "", p)
-    return p
-
-
 def hash_pin(pin: str) -> str:
-    p = normalize_pin(pin)
-    if not re.fullmatch(r"\d{4,6}", p):
-        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
-    return pwd_context.hash(p)
+    return pwd_context.hash(pin)
 
 
 def verify_pin(pin: str, pin_hash: str) -> bool:
-    p = normalize_pin(pin)
-    if not re.fullmatch(r"\d{4,6}", p):
-        return False
-    return pwd_context.verify(p, pin_hash)
-
+    return pwd_context.verify(pin, pin_hash)
 
 
 def create_token(user: User) -> str:
@@ -191,11 +188,6 @@ class LoginResponse(BaseModel):
     role: str
 
 
-class BootstrapAdminRequest(BaseModel):
-    name: str
-    pin: str = Field(min_length=4, max_length=6)
-
-
 class CreateUserRequest(BaseModel):
     name: str
     role: str  # assembler|supervisor|admin
@@ -232,12 +224,6 @@ class AddNoteRequest(BaseModel):
 
 
 class NoteOut(BaseModel):
-
-    user_id: int
-    name: str
-    role: str
-    started_at: datetime
-
     id: int
     work_order_id: int
     author_name: str
@@ -246,10 +232,17 @@ class NoteOut(BaseModel):
     created_at: datetime
 
 
+class WorkerOut(BaseModel):
+    user_id: int
+    name: str
+    role: str
+    started_at: datetime
+
+
 # -----------------------------
 # App
 # -----------------------------
-app = FastAPI(title="TRR Assembly Work Orders")
+app = FastAPI(title="TRR Assembly Work Orders API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -258,7 +251,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 STATIONS = [
     "Electrical",
@@ -274,7 +266,6 @@ STATIONS = [
 
 
 def next_wo_number(db: Session) -> str:
-    # WO-000001 style
     last = db.execute(select(func.max(WorkOrder.id))).scalar()
     n = (last or 0) + 1
     return f"WO-{n:06d}"
@@ -282,7 +273,6 @@ def next_wo_number(db: Session) -> str:
 
 @app.on_event("startup")
 def startup():
-    # Create tables
     Base.metadata.create_all(engine)
 
 
@@ -292,49 +282,54 @@ def health():
 
 
 # -----------------------------
-# Auth endpoints
+# Bootstrap (one-time)
 # -----------------------------
-@app.post("/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.execute(select(User).where(User.name == payload.name)).scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid name or PIN")
-    if not verify_pin(payload.pin, user.pin_hash):
-        raise HTTPException(status_code=401, detail="Invalid name or PIN")
-
-    return LoginResponse(token=create_token(user), name=user.name, role=user.role)
-
 @app.post("/bootstrap/admin", response_model=UserOut)
 def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_db)):
     """
     One-time endpoint to create the very first admin if no users exist.
     After the first user exists, it is disabled.
     """
-    # If any user exists, disable bootstrap
     existing_any = db.execute(select(User).limit(1)).scalar_one_or_none()
     if existing_any:
         raise HTTPException(status_code=403, detail="Bootstrap disabled")
 
-    role = payload.role.strip().lower()
-    if role not in ("admin", "supervisor", "assembler"):
-        raise HTTPException(status_code=400, detail="role must be assembler, supervisor, or admin")
+    name = payload.name.strip()
+    pin = payload.pin.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
 
-    # Force first user to be admin regardless of payload role (safer)
     u = User(
-        name=payload.name.strip(),
-        role="admin",
-        pin_hash=hash_pin(payload.pin.strip()),
+        name=name,
+        role="admin",  # force first user to admin
+        pin_hash=hash_pin(pin),
         is_active=True,
     )
     db.add(u)
     db.commit()
     db.refresh(u)
-
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
 
+# -----------------------------
+# Auth endpoints
+# -----------------------------
+@app.post("/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    user = db.execute(select(User).where(User.name == payload.name.strip())).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid name or PIN")
+    if not verify_pin(payload.pin.strip(), user.pin_hash):
+        raise HTTPException(status_code=401, detail="Invalid name or PIN")
+
+    return LoginResponse(token=create_token(user), name=user.name, role=user.role)
+
+
+# -----------------------------
+# Users
+# -----------------------------
 @app.get("/users", response_model=List[UserOut])
-def list_users(_admin: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
+def list_users(_u: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
     users = db.execute(select(User).order_by(User.name.asc())).scalars().all()
     return [UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active) for u in users]
 
@@ -345,15 +340,15 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     if role not in ("assembler", "supervisor", "admin"):
         raise HTTPException(status_code=400, detail="role must be assembler, supervisor, or admin")
 
-    existing = db.execute(select(User).where(User.name == req.name)).scalar_one_or_none()
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    existing = db.execute(select(User).where(User.name == name)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail="User name already exists")
 
-    pin = req.pin.strip()
-    if not re.fullmatch(r"\d{4,6}", pin):
-        raise HTTPException(status_code=400, detail="PIN must be 4–6 digits")
-
-    u = User(name=req.name.strip(), role=role, pin_hash=hash_pin(pin), is_active=True)
+    u = User(name=name, role=role, pin_hash=hash_pin(req.pin.strip()), is_active=True)
     db.add(u)
     db.commit()
     db.refresh(u)
@@ -366,7 +361,7 @@ def stations(_user: User = Depends(require_user)):
 
 
 # -----------------------------
-# Work Orders + Notes
+# Work Orders
 # -----------------------------
 @app.post("/work-orders", response_model=WOOut)
 def create_work_order(
@@ -377,11 +372,19 @@ def create_work_order(
     if req.station not in STATIONS:
         raise HTTPException(status_code=400, detail="Invalid station")
 
+    pn = req.part_number.strip()
+    if not pn:
+        raise HTTPException(status_code=400, detail="part_number is required")
+
+    co = req.customer_order.strip() if req.customer_order else None
+    if not req.is_stock and not co:
+        raise HTTPException(status_code=400, detail="customer_order is required unless is_stock is true")
+
     wo = WorkOrder(
         wo_number=next_wo_number(db),
         station=req.station,
-        part_number=req.part_number.strip(),
-        customer_order=(req.customer_order.strip() if req.customer_order else None),
+        part_number=pn,
+        customer_order=(None if req.is_stock else co),
         is_stock=bool(req.is_stock),
         status="open",
     )
@@ -435,6 +438,9 @@ def get_work_order(wo_id: int, _user: User = Depends(require_user), db: Session 
     )
 
 
+# -----------------------------
+# Notes
+# -----------------------------
 @app.post("/work-orders/{wo_id}/notes", response_model=NoteOut)
 def add_note(
     wo_id: int,
@@ -472,7 +478,7 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    notes = (
+    rows = (
         db.execute(
             select(WorkOrderNote, User.name)
             .join(User, User.id == WorkOrderNote.author_user_id)
@@ -483,7 +489,7 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
     )
 
     out: List[NoteOut] = []
-    for n, author_name in notes:
+    for n, author_name in rows:
         out.append(
             NoteOut(
                 id=n.id,
@@ -496,6 +502,10 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
         )
     return out
 
+
+# -----------------------------
+# Active Workers (warning support)
+# -----------------------------
 @app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
 def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
     wo = db.get(WorkOrder, wo_id)
@@ -525,7 +535,6 @@ def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sess
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    # If the user is already active on this WO, do nothing
     existing = db.execute(
         select(WorkOrderWorker)
         .where(WorkOrderWorker.work_order_id == wo_id)
@@ -537,7 +546,6 @@ def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sess
         db.add(WorkOrderWorker(work_order_id=wo_id, user_id=user.id))
         db.commit()
 
-    # Return current active workers (so UI can warn immediately)
     return list_workers(wo_id, user, db)
 
 
@@ -561,4 +569,3 @@ def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sessi
 
     db.commit()
     return {"ok": True}
-
