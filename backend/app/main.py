@@ -372,7 +372,8 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
 @app.post("/admin/reset-pin", response_model=OkResponse)
 def admin_reset_pin(
     req: ResetPinRequest,
-    x_reset_token: Optional[str] = Header(default=None, convert_underscores=False),
+    x_reset_token: Optional[str] = Header(default=None, alias="X-Reset-Token"),
+
     db: Session = Depends(get_db),
 ):
     if not RESET_TOKEN:
