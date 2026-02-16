@@ -371,6 +371,10 @@ function WorkOrderDetail({ token, wo, onBack }) {
   const [noteText, setNoteText] = useState("");
   const [notesLoading, setNotesLoading] = useState(true);
   const [posting, setPosting] = useState(false);
+  // Workers warning
+  const [workers, setWorkers] = useState([]);
+  const [workersErr, setWorkersErr] = useState("");
+
 
   const title = useMemo(() => `${freshWO.wo_number} — ${freshWO.station}`, [freshWO]);
 
@@ -432,17 +436,73 @@ function WorkOrderDetail({ token, wo, onBack }) {
     }
   }
 
+  async function loadWorkers() {
+    setWorkersErr("");
+    try {
+      const res = await fetch(`${API_BASE}/work-orders/${wo.id}/workers`, {
+        headers: { ...authHeaders(token) },
+      });
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.detail || "Failed to load workers");
+      setWorkers(Array.isArray(data) ? data : []);
+    } catch (ex) {
+      setWorkersErr(ex.message || "Failed to load workers");
+    }
+  }
+
+  async function startWorking() {
+    setWorkersErr("");
+    try {
+      const res = await fetch(`${API_BASE}/work-orders/${wo.id}/workers/start`, {
+        method: "POST",
+        headers: { ...authHeaders(token) },
+      });
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.detail || "Failed to start work session");
+      setWorkers(Array.isArray(data) ? data : []);
+    } catch (ex) {
+      setWorkersErr(ex.message || "Failed to start work session");
+    }
+  }
+
+  async function stopWorking() {
+    try {
+      await fetch(`${API_BASE}/work-orders/${wo.id}/workers/stop`, {
+        method: "POST",
+        headers: { ...authHeaders(token) },
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   useEffect(() => {
-    loadWO();
-    loadNotes();
+      useEffect(() => {
+    let isMounted = true;
+
+    async function init() {
+      await loadWO();
+      await loadNotes();
+      await startWorking(); // <-- auto check-in
+    }
+
+    init();
 
     const t = setInterval(() => {
+      if (!isMounted) return;
       loadWO();
       loadNotes();
+      loadWorkers(); // keep warning up-to-date
     }, 15000);
-    return () => clearInterval(t);
+
+    return () => {
+      isMounted = false;
+      clearInterval(t);
+      stopWorking(); // <-- auto check-out
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wo.id]);
+
 
   return (
     <div>
@@ -452,6 +512,40 @@ function WorkOrderDetail({ token, wo, onBack }) {
 
       <h2 style={{ margin: 0 }}>{title}</h2>
       <div style={{ opacity: 0.8, marginBottom: 12 }}>Work order details</div>
+      {/* ACTIVE WORKERS WARNING */}
+      <ActiveWorkersBanner workers={workers} workersErr={workersErr} />
+function ActiveWorkersBanner({ workers, workersErr }) {
+  if (workersErr) {
+    return <div style={{ color: "#b00020", marginBottom: 10 }}>{workersErr}</div>;
+  }
+
+  if (!Array.isArray(workers) || workers.length <= 1) {
+    return null;
+  }
+
+  // Show everyone active (including you) but highlight "others"
+  const names = workers.map((w) => w.name).join(", ");
+
+  return (
+    <div
+      style={{
+        border: "1px solid #f0c36d",
+        background: "#fff7e6",
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 12,
+      }}
+    >
+      <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ Someone else is working on this WO</div>
+      <div style={{ opacity: 0.9 }}>
+        Active workers right now: <b>{names}</b>
+      </div>
+      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+        You can continue, but communicate to avoid duplicate work.
+      </div>
+    </div>
+  );
+}
 
       {loading && <div>Loading…</div>}
       {err && <div style={{ color: "#b00020" }}>{err}</div>}
