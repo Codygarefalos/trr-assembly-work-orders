@@ -38,7 +38,7 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
-# Use PBKDF2 (stable on Render, no bcrypt backend issues)
+# Stable on Render (no bcrypt issues)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
@@ -175,7 +175,7 @@ def require_role(*roles: str):
 
 
 # -----------------------------
-# Pydantic schemas
+# Schemas
 # -----------------------------
 class LoginRequest(BaseModel):
     name: str
@@ -199,6 +199,11 @@ class UserOut(BaseModel):
     name: str
     role: str
     is_active: bool
+
+
+class ResetUserPinRequest(BaseModel):
+    user_id: int
+    new_pin: str = Field(min_length=4, max_length=6)
 
 
 class CreateWORequest(BaseModel):
@@ -237,6 +242,11 @@ class WorkerOut(BaseModel):
     name: str
     role: str
     started_at: datetime
+
+
+class CloseWOResponse(BaseModel):
+    ok: bool
+    status: str
 
 
 # -----------------------------
@@ -282,27 +292,22 @@ def health():
 
 
 # -----------------------------
-# Bootstrap (one-time)
+# Bootstrap first admin (one-time)
 # -----------------------------
 @app.post("/bootstrap/admin", response_model=UserOut)
 def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_db)):
-    """
-    One-time endpoint to create the very first admin if no users exist.
-    After the first user exists, it is disabled.
-    """
     existing_any = db.execute(select(User).limit(1)).scalar_one_or_none()
     if existing_any:
         raise HTTPException(status_code=403, detail="Bootstrap disabled")
 
     name = payload.name.strip()
-    pin = payload.pin.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
 
     u = User(
         name=name,
-        role="admin",  # force first user to admin
-        pin_hash=hash_pin(pin),
+        role="admin",
+        pin_hash=hash_pin(payload.pin.strip()),
         is_active=True,
     )
     db.add(u)
@@ -312,7 +317,7 @@ def bootstrap_first_admin(payload: CreateUserRequest, db: Session = Depends(get_
 
 
 # -----------------------------
-# Auth endpoints
+# Auth
 # -----------------------------
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -353,35 +358,23 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     db.commit()
     db.refresh(u)
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
-class ResetPinRequest(BaseModel):
-    name: str
-    new_pin: str = Field(min_length=4, max_length=6)
 
 
-@app.post("/admin/reset-pin", response_model=UserOut)
-def admin_reset_pin(req: ResetPinRequest, db: Session = Depends(get_db), x_reset_token: Optional[str] = Header(default=None)):
-    expected = os.getenv("RESET_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(status_code=500, detail="RESET_TOKEN not set on server")
-    if not x_reset_token or x_reset_token.strip() != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+@app.post("/admin/users/reset-pin", response_model=UserOut)
+def admin_reset_user_pin(
+    req: ResetUserPinRequest,
+    _admin: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    u = db.get(User, req.user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    name = req.name.strip()
-    user = db.execute(select(User).where(User.name == name)).scalar_one_or_none()
-
-    if user:
-        # reset existing user's PIN and ensure active/admin
-        user.pin_hash = hash_pin(req.new_pin.strip())
-        user.is_active = True
-        user.role = "admin"
-    else:
-        # create if missing
-        user = User(name=name, role="admin", pin_hash=hash_pin(req.new_pin.strip()), is_active=True)
-        db.add(user)
-
+    u.pin_hash = hash_pin(req.new_pin.strip())
+    u.is_active = True
     db.commit()
-    db.refresh(user)
-    return UserOut(id=user.id, name=user.name, role=user.role, is_active=user.is_active)
+    db.refresh(u)
+    return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
 
 
 @app.get("/stations")
@@ -420,6 +413,7 @@ def create_work_order(
     db.add(wo)
     db.commit()
     db.refresh(wo)
+
     return WOOut(
         id=wo.id,
         wo_number=wo.wo_number,
@@ -455,6 +449,7 @@ def get_work_order(wo_id: int, _user: User = Depends(require_user), db: Session 
     wo = db.get(WorkOrder, wo_id)
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+
     return WOOut(
         id=wo.id,
         wo_number=wo.wo_number,
@@ -465,6 +460,21 @@ def get_work_order(wo_id: int, _user: User = Depends(require_user), db: Session 
         status=wo.status,
         created_at=wo.created_at,
     )
+
+
+@app.post("/work-orders/{wo_id}/close", response_model=CloseWOResponse)
+def close_work_order(
+    wo_id: int,
+    _sup: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    wo.status = "complete"
+    db.commit()
+    return CloseWOResponse(ok=True, status=wo.status)
 
 
 # -----------------------------
@@ -533,7 +543,7 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
 
 
 # -----------------------------
-# Active Workers (warning support)
+# Workers (check in/out + warning)
 # -----------------------------
 @app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
 def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
@@ -573,6 +583,8 @@ def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sess
 
     if not existing:
         db.add(WorkOrderWorker(work_order_id=wo_id, user_id=user.id))
+        if wo.status == "open":
+            wo.status = "in_progress"
         db.commit()
 
     return list_workers(wo_id, user, db)
@@ -585,7 +597,6 @@ def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Sessi
         raise HTTPException(status_code=404, detail="Work order not found")
 
     now = datetime.now(timezone.utc)
-
     active_rows = db.execute(
         select(WorkOrderWorker)
         .where(WorkOrderWorker.work_order_id == wo_id)
