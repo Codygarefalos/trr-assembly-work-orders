@@ -70,8 +70,19 @@ class WorkOrder(Base):
     notes: Mapped[List["WorkOrderNote"]] = relationship(back_populates="work_order", cascade="all, delete-orphan")
 
 
-class WorkOrderNote(Base):
-    __tablename__ = "work_order_notes"
+
+class WorkOrderWorker(Base):
+    __tablename__ = "work_order_workers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    work_order: Mapped["WorkOrder"] = relationship()
+    user: Mapped["User"] = relationship()
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
@@ -221,6 +232,12 @@ class AddNoteRequest(BaseModel):
 
 
 class NoteOut(BaseModel):
+
+    user_id: int
+    name: str
+    role: str
+    started_at: datetime
+
     id: int
     work_order_id: int
     author_name: str
@@ -477,3 +494,70 @@ def list_notes(wo_id: int, _user: User = Depends(require_user), db: Session = De
             )
         )
     return out
+
+@app.get("/work-orders/{wo_id}/workers", response_model=List[WorkerOut])
+def list_workers(wo_id: int, _user: User = Depends(require_user), db: Session = Depends(get_db)):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    rows = (
+        db.execute(
+            select(WorkOrderWorker, User)
+            .join(User, User.id == WorkOrderWorker.user_id)
+            .where(WorkOrderWorker.work_order_id == wo_id)
+            .where(WorkOrderWorker.ended_at.is_(None))
+            .order_by(WorkOrderWorker.started_at.asc())
+        )
+        .all()
+    )
+
+    out: List[WorkerOut] = []
+    for w, u in rows:
+        out.append(WorkerOut(user_id=u.id, name=u.name, role=u.role, started_at=w.started_at))
+    return out
+
+
+@app.post("/work-orders/{wo_id}/workers/start", response_model=List[WorkerOut])
+def start_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    # If the user is already active on this WO, do nothing
+    existing = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.user_id == user.id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalar_one_or_none()
+
+    if not existing:
+        db.add(WorkOrderWorker(work_order_id=wo_id, user_id=user.id))
+        db.commit()
+
+    # Return current active workers (so UI can warn immediately)
+    return list_workers(wo_id, user, db)
+
+
+@app.post("/work-orders/{wo_id}/workers/stop")
+def stop_working_on_wo(wo_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    wo = db.get(WorkOrder, wo_id)
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    now = datetime.now(timezone.utc)
+
+    active_rows = db.execute(
+        select(WorkOrderWorker)
+        .where(WorkOrderWorker.work_order_id == wo_id)
+        .where(WorkOrderWorker.user_id == user.id)
+        .where(WorkOrderWorker.ended_at.is_(None))
+    ).scalars().all()
+
+    for r in active_rows:
+        r.ended_at = now
+
+    db.commit()
+    return {"ok": True}
+
