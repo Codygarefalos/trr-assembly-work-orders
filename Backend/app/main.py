@@ -290,6 +290,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @app.post("/bootstrap/admin", response_model=UserOut)
 def bootstrap_first_admin(req: BootstrapAdminRequest, db: Session = Depends(get_db)):
+raise HTTPException(status_code=403, detail="Bootstrap disabled")
     """
     One-time endpoint to create the first admin user.
     Only works if there are 0 users in the database.
