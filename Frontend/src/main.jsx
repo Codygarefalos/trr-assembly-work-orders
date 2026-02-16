@@ -17,7 +17,6 @@ function App() {
     }
   });
 
-  // simple "router"
   const [selectedWO, setSelectedWO] = useState(null);
 
   function logout() {
@@ -47,13 +46,9 @@ function App() {
       <Header me={me} onLogout={logout} />
 
       {!selectedWO ? (
-        <WorkOrderList token={token} onOpenWO={(wo) => setSelectedWO(wo)} />
+        <WorkOrderList token={token} me={me} onOpenWO={(wo) => setSelectedWO(wo)} />
       ) : (
-        <WorkOrderDetail
-          token={token}
-          wo={selectedWO}
-          onBack={() => setSelectedWO(null)}
-        />
+        <WorkOrderDetail token={token} wo={selectedWO} onBack={() => setSelectedWO(null)} />
       )}
     </div>
   );
@@ -98,7 +93,7 @@ function Login({ onLogin }) {
   return (
     <div style={{ fontFamily: "system-ui, Arial", maxWidth: 520, margin: "60px auto", padding: 16 }}>
       <h2 style={{ margin: 0, marginBottom: 8 }}>Log in</h2>
-      <div style={{ opacity: 0.8, marginBottom: 16 }}>Select your name and enter your PIN.</div>
+      <div style={{ opacity: 0.8, marginBottom: 16 }}>Enter your name and PIN.</div>
 
       <form onSubmit={submit} style={{ display: "grid", gap: 10 }}>
         <label style={label()}>
@@ -127,12 +122,42 @@ function Login({ onLogin }) {
   );
 }
 
-function WorkOrderList({ token, onOpenWO }) {
+function WorkOrderList({ token, me, onOpenWO }) {
   const [wos, setWOs] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function load() {
+  // Stations (from API)
+  const [stations, setStations] = useState([]);
+  const [stationsErr, setStationsErr] = useState("");
+
+  // Create WO UI
+  const canCreate = me?.role === "admin" || me?.role === "supervisor";
+  const [showCreate, setShowCreate] = useState(false);
+  const [station, setStation] = useState("");
+  const [partNumber, setPartNumber] = useState("");
+  const [customerOrder, setCustomerOrder] = useState("");
+  const [isStock, setIsStock] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState("");
+
+  async function loadStations() {
+    setStationsErr("");
+    try {
+      const res = await fetch(`${API_BASE}/stations`, {
+        headers: { ...authHeaders(token) },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to load stations");
+      const list = Array.isArray(data.stations) ? data.stations : [];
+      setStations(list);
+      if (!station && list.length) setStation(list[0]);
+    } catch (ex) {
+      setStationsErr(ex.message || "Failed to load stations");
+    }
+  }
+
+  async function loadWOs() {
     setLoading(true);
     setErr("");
     try {
@@ -141,7 +166,7 @@ function WorkOrderList({ token, onOpenWO }) {
       });
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data.detail || "Failed to load work orders");
-      setWOs(data);
+      setWOs(Array.isArray(data) ? data : []);
     } catch (ex) {
       setErr(ex.message || "Failed to load");
     } finally {
@@ -149,28 +174,153 @@ function WorkOrderList({ token, onOpenWO }) {
     }
   }
 
+  async function createWO() {
+    setCreateErr("");
+    const pn = partNumber.trim();
+    const co = customerOrder.trim();
+
+    if (!station) return setCreateErr("Please choose a station.");
+    if (!pn) return setCreateErr("Part number is required.");
+    if (!isStock && !co) return setCreateErr("Customer order is required unless Stock is checked.");
+
+    setCreating(true);
+    try {
+      const res = await fetch(`${API_BASE}/work-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({
+          station,
+          part_number: pn,
+          customer_order: isStock ? null : co,
+          is_stock: isStock,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to create work order");
+
+      // reset form (keep station)
+      setPartNumber("");
+      setCustomerOrder("");
+      setIsStock(false);
+      setShowCreate(false);
+
+      // refresh list and open it
+      await loadWOs();
+      onOpenWO(data);
+    } catch (ex) {
+      setCreateErr(ex.message || "Failed to create work order");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   useEffect(() => {
-    load();
-    // refresh list every 15 seconds
-    const t = setInterval(load, 15000);
+    loadStations();
+    loadWOs();
+    const t = setInterval(loadWOs, 15000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <h3 style={{ margin: 0 }}>Work Orders</h3>
-        <button onClick={load} style={btn({ marginLeft: "auto" })}>
-          Refresh
-        </button>
-      </div>
+      {/* CREATE WO PANEL */}
+      {canCreate && (
+        <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Work Orders</h3>
+            <button onClick={loadWOs} style={btn({ marginLeft: "auto" })}>
+              Refresh
+            </button>
+            <button onClick={() => setShowCreate((v) => !v)} style={btn()}>
+              {showCreate ? "Close" : "+ New Work Order"}
+            </button>
+          </div>
+
+          {stationsErr && <div style={{ color: "#b00020", marginTop: 8 }}>{stationsErr}</div>}
+
+          {showCreate && (
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <label style={label()}>
+                  Station
+                  <select value={station} onChange={(e) => setStation(e.target.value)} style={input()}>
+                    {stations.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label style={label()}>
+                  Part Number
+                  <input
+                    value={partNumber}
+                    onChange={(e) => setPartNumber(e.target.value)}
+                    style={input()}
+                    placeholder="e.g. TRR-12345"
+                  />
+                </label>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 10, alignItems: "end" }}>
+                <label style={label()}>
+                  Customer Order #
+                  <input
+                    value={customerOrder}
+                    onChange={(e) => setCustomerOrder(e.target.value)}
+                    style={input()}
+                    placeholder="e.g. SO-98765"
+                    disabled={isStock}
+                  />
+                </label>
+
+                <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 700 }}>
+                  <input
+                    type="checkbox"
+                    checked={isStock}
+                    onChange={(e) => setIsStock(e.target.checked)}
+                  />
+                  Stock (no customer order)
+                </label>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <button onClick={createWO} disabled={creating} style={btn()}>
+                  {creating ? "Creating…" : "Create Work Order"}
+                </button>
+                {createErr && <div style={{ color: "#b00020" }}>{createErr}</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* If not admin/supervisor, still show header row */}
+      {!canCreate && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <h3 style={{ margin: 0 }}>Work Orders</h3>
+          <button onClick={loadWOs} style={btn({ marginLeft: "auto" })}>
+            Refresh
+          </button>
+        </div>
+      )}
 
       {loading && <div>Loading…</div>}
       {err && <div style={{ color: "#b00020" }}>{err}</div>}
 
       <div style={{ border: "1px solid #ddd", borderRadius: 10, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 140px", gap: 0, background: "#f7f7f7", padding: 10, fontWeight: 700 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "140px 1fr 1fr 140px",
+            gap: 0,
+            background: "#f7f7f7",
+            padding: 10,
+            fontWeight: 700,
+          }}
+        >
           <div>WO</div>
           <div>Station</div>
           <div>Part / Order</div>
@@ -190,21 +340,21 @@ function WorkOrderList({ token, onOpenWO }) {
             }}
             title="Open work order"
           >
-            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{wo.wo_number}</div>
+            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+              {wo.wo_number}
+            </div>
             <div>{wo.station}</div>
             <div>
-              <div><b>{wo.part_number}</b></div>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>
-                {wo.is_stock ? "Stock" : `Order: ${wo.customer_order || "—"}`}
+              <div>
+                <b>{wo.part_number}</b>
               </div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>{wo.is_stock ? "Stock" : `Order: ${wo.customer_order || "—"}`}</div>
             </div>
             <div style={{ textTransform: "capitalize" }}>{wo.status.replaceAll("_", " ")}</div>
           </div>
         ))}
 
-        {(!loading && wos.length === 0) && (
-          <div style={{ padding: 10, opacity: 0.8 }}>No work orders yet.</div>
-        )}
+        {!loading && wos.length === 0 && <div style={{ padding: 10, opacity: 0.8 }}>No work orders yet.</div>}
       </div>
     </div>
   );
@@ -274,7 +424,6 @@ function WorkOrderDetail({ token, wo, onBack }) {
       if (!res.ok) throw new Error(data.detail || "Failed to add note");
 
       setNoteText("");
-      // refresh list (or optimistically prepend)
       await loadNotes();
     } catch (ex) {
       setNotesErr(ex.message || "Failed to add note");
@@ -287,7 +436,6 @@ function WorkOrderDetail({ token, wo, onBack }) {
     loadWO();
     loadNotes();
 
-    // refresh WO + notes every 15 seconds while open
     const t = setInterval(() => {
       loadWO();
       loadNotes();
@@ -312,10 +460,7 @@ function WorkOrderDetail({ token, wo, onBack }) {
         <Row label="WO Number" value={freshWO.wo_number} mono />
         <Row label="Station" value={freshWO.station} />
         <Row label="Part Number" value={freshWO.part_number} />
-        <Row
-          label="Customer / Stock"
-          value={freshWO.is_stock ? "Stock" : (freshWO.customer_order || "—")}
-        />
+        <Row label="Customer / Stock" value={freshWO.is_stock ? "Stock" : freshWO.customer_order || "—"} />
         <Row label="Status" value={freshWO.status.replaceAll("_", " ")} />
         <Row label="Created" value={new Date(freshWO.created_at).toLocaleString()} />
       </div>
@@ -365,13 +510,9 @@ function WorkOrderDetail({ token, wo, onBack }) {
                   <div key={n.id} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
                       <div style={{ fontWeight: 700 }}>{n.author_name}</div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        {new Date(n.created_at).toLocaleString()}
-                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.7 }}>{new Date(n.created_at).toLocaleString()}</div>
                       {n.station && (
-                        <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>
-                          {n.station}
-                        </div>
+                        <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>{n.station}</div>
                       )}
                     </div>
                     <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{n.text}</div>
