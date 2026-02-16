@@ -18,11 +18,13 @@ function App() {
   });
 
   const [selectedWO, setSelectedWO] = useState(null);
+  const [page, setPage] = useState("workorders"); // workorders | users
 
   function logout() {
     setToken("");
     setMe(null);
     setSelectedWO(null);
+    setPage("workorders");
     localStorage.removeItem("trr_token");
     localStorage.removeItem("trr_me");
   }
@@ -41,11 +43,24 @@ function App() {
     );
   }
 
+  const canManageUsers = me.role === "admin" || me.role === "supervisor";
+
   return (
     <div style={{ fontFamily: "system-ui, Arial", maxWidth: 980, margin: "0 auto", padding: 16 }}>
-      <Header me={me} onLogout={logout} />
+      <Header
+        me={me}
+        page={page}
+        canManageUsers={canManageUsers}
+        onNav={(p) => {
+          setSelectedWO(null);
+          setPage(p);
+        }}
+        onLogout={logout}
+      />
 
-      {!selectedWO ? (
+      {page === "users" && canManageUsers ? (
+        <UsersPage token={token} me={me} />
+      ) : !selectedWO ? (
         <WorkOrderList token={token} me={me} onOpenWO={(wo) => setSelectedWO(wo)} />
       ) : (
         <WorkOrderDetail token={token} wo={selectedWO} onBack={() => setSelectedWO(null)} />
@@ -54,13 +69,26 @@ function App() {
   );
 }
 
-function Header({ me, onLogout }) {
+function Header({ me, page, canManageUsers, onNav, onLogout }) {
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
-      <div style={{ fontSize: 22, fontWeight: 700 }}>TRR Assembly Work Orders</div>
+    <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ fontSize: 22, fontWeight: 800 }}>TRR Assembly Work Orders</div>
+
+      <div style={{ display: "flex", gap: 8, marginLeft: 12 }}>
+        <button onClick={() => onNav("workorders")} style={btn(page === "workorders" ? btnOn() : {})}>
+          Work Orders
+        </button>
+        {canManageUsers && (
+          <button onClick={() => onNav("users")} style={btn(page === "users" ? btnOn() : {})}>
+            Users
+          </button>
+        )}
+      </div>
+
       <div style={{ marginLeft: "auto", fontSize: 14, opacity: 0.9 }}>
         Logged in as <b>{me.name}</b> ({me.role})
       </div>
+
       <button onClick={onLogout} style={btn()}>
         Log out
       </button>
@@ -122,16 +150,153 @@ function Login({ onLogin }) {
   );
 }
 
+function UsersPage({ token, me }) {
+  const [users, setUsers] = useState([]);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const canCreate = me.role === "admin";
+
+  // create form
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("assembler");
+  const [pin, setPin] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await fetch(`${API_BASE}/users`, {
+        headers: { ...authHeaders(token) },
+      });
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.detail || "Failed to load users");
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (ex) {
+      setErr(ex.message || "Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createUser() {
+    setCreateErr("");
+
+    const n = name.trim();
+    const p = pin.trim();
+
+    if (!n) return setCreateErr("Name is required.");
+    if (!/^\d{4,6}$/.test(p)) return setCreateErr("PIN must be 4–6 digits.");
+
+    setCreating(true);
+    try {
+      const res = await fetch(`${API_BASE}/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ name: n, role, pin: p }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to create user");
+
+      setName("");
+      setRole("assembler");
+      setPin("");
+      await load();
+    } catch (ex) {
+      setCreateErr(ex.message || "Failed to create user");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <h3 style={{ margin: 0 }}>Users</h3>
+        <button onClick={load} style={btn({ marginLeft: "auto" })}>
+          Refresh
+        </button>
+      </div>
+
+      {canCreate && (
+        <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>Create User</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 200px 200px", gap: 10 }}>
+            <label style={label()}>
+              Name
+              <input value={name} onChange={(e) => setName(e.target.value)} style={input()} placeholder="e.g. Jose" />
+            </label>
+
+            <label style={label()}>
+              Role
+              <select value={role} onChange={(e) => setRole(e.target.value)} style={input()}>
+                <option value="assembler">assembler</option>
+                <option value="supervisor">supervisor</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+
+            <label style={label()}>
+              PIN (4–6 digits)
+              <input value={pin} onChange={(e) => setPin(e.target.value)} style={input()} inputMode="numeric" placeholder="1234" />
+            </label>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+            <button onClick={createUser} disabled={creating} style={btn()}>
+              {creating ? "Creating…" : "Create User"}
+            </button>
+            {createErr && <div style={{ color: "#b00020" }}>{createErr}</div>}
+          </div>
+        </div>
+      )}
+
+      {loading && <div>Loading…</div>}
+      {err && <div style={{ color: "#b00020" }}>{err}</div>}
+
+      <div style={{ border: "1px solid #ddd", borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 120px", background: "#f7f7f7", padding: 10, fontWeight: 800 }}>
+          <div>Name</div>
+          <div>Role</div>
+          <div>Active</div>
+        </div>
+
+        {users.map((u) => (
+          <div key={u.id} style={{ display: "grid", gridTemplateColumns: "1fr 160px 120px", padding: 10, borderTop: "1px solid #eee" }}>
+            <div>{u.name}</div>
+            <div style={{ textTransform: "capitalize" }}>{u.role}</div>
+            <div>{u.is_active ? "Yes" : "No"}</div>
+          </div>
+        ))}
+
+        {!loading && users.length === 0 && <div style={{ padding: 10, opacity: 0.8 }}>No users found.</div>}
+      </div>
+
+      {!canCreate && (
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+          Only admins can create users.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WorkOrderList({ token, me, onOpenWO }) {
   const [wos, setWOs] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Stations (from API)
   const [stations, setStations] = useState([]);
   const [stationsErr, setStationsErr] = useState("");
 
-  // Create WO UI
   const canCreate = me?.role === "admin" || me?.role === "supervisor";
   const [showCreate, setShowCreate] = useState(false);
   const [station, setStation] = useState("");
@@ -198,13 +363,11 @@ function WorkOrderList({ token, me, onOpenWO }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Failed to create work order");
 
-      // reset form (keep station)
       setPartNumber("");
       setCustomerOrder("");
       setIsStock(false);
       setShowCreate(false);
 
-      // refresh list and open it
       await loadWOs();
       onOpenWO(data);
     } catch (ex) {
@@ -224,7 +387,6 @@ function WorkOrderList({ token, me, onOpenWO }) {
 
   return (
     <div>
-      {/* CREATE WO PANEL */}
       {canCreate && (
         <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14, marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -255,16 +417,11 @@ function WorkOrderList({ token, me, onOpenWO }) {
 
                 <label style={label()}>
                   Part Number
-                  <input
-                    value={partNumber}
-                    onChange={(e) => setPartNumber(e.target.value)}
-                    style={input()}
-                    placeholder="e.g. TRR-12345"
-                  />
+                  <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={input()} placeholder="e.g. TRR-12345" />
                 </label>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 10, alignItems: "end" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 10, alignItems: "end" }}>
                 <label style={label()}>
                   Customer Order #
                   <input
@@ -277,11 +434,7 @@ function WorkOrderList({ token, me, onOpenWO }) {
                 </label>
 
                 <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 700 }}>
-                  <input
-                    type="checkbox"
-                    checked={isStock}
-                    onChange={(e) => setIsStock(e.target.checked)}
-                  />
+                  <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
                   Stock (no customer order)
                 </label>
               </div>
@@ -297,7 +450,6 @@ function WorkOrderList({ token, me, onOpenWO }) {
         </div>
       )}
 
-      {/* If not admin/supervisor, still show header row */}
       {!canCreate && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
           <h3 style={{ margin: 0 }}>Work Orders</h3>
@@ -311,16 +463,7 @@ function WorkOrderList({ token, me, onOpenWO }) {
       {err && <div style={{ color: "#b00020" }}>{err}</div>}
 
       <div style={{ border: "1px solid #ddd", borderRadius: 10, overflow: "hidden" }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "140px 1fr 1fr 140px",
-            gap: 0,
-            background: "#f7f7f7",
-            padding: 10,
-            fontWeight: 700,
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 140px", background: "#f7f7f7", padding: 10, fontWeight: 800 }}>
           <div>WO</div>
           <div>Station</div>
           <div>Part / Order</div>
@@ -331,18 +474,10 @@ function WorkOrderList({ token, me, onOpenWO }) {
           <div
             key={wo.id}
             onClick={() => onOpenWO(wo)}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "140px 1fr 1fr 140px",
-              padding: 10,
-              borderTop: "1px solid #eee",
-              cursor: "pointer",
-            }}
+            style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 140px", padding: 10, borderTop: "1px solid #eee", cursor: "pointer" }}
             title="Open work order"
           >
-            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-              {wo.wo_number}
-            </div>
+            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{wo.wo_number}</div>
             <div>{wo.station}</div>
             <div>
               <div>
@@ -365,16 +500,11 @@ function WorkOrderDetail({ token, wo, onBack }) {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Notes state
   const [notes, setNotes] = useState([]);
   const [notesErr, setNotesErr] = useState("");
   const [noteText, setNoteText] = useState("");
   const [notesLoading, setNotesLoading] = useState(true);
   const [posting, setPosting] = useState(false);
-  // Workers warning
-  const [workers, setWorkers] = useState([]);
-  const [workersErr, setWorkersErr] = useState("");
-
 
   const title = useMemo(() => `${freshWO.wo_number} — ${freshWO.station}`, [freshWO]);
 
@@ -436,73 +566,18 @@ function WorkOrderDetail({ token, wo, onBack }) {
     }
   }
 
-  async function loadWorkers() {
-    setWorkersErr("");
-    try {
-      const res = await fetch(`${API_BASE}/work-orders/${wo.id}/workers`, {
-        headers: { ...authHeaders(token) },
-      });
-      const data = await res.json().catch(() => []);
-      if (!res.ok) throw new Error(data.detail || "Failed to load workers");
-      setWorkers(Array.isArray(data) ? data : []);
-    } catch (ex) {
-      setWorkersErr(ex.message || "Failed to load workers");
-    }
-  }
-
-  async function startWorking() {
-    setWorkersErr("");
-    try {
-      const res = await fetch(`${API_BASE}/work-orders/${wo.id}/workers/start`, {
-        method: "POST",
-        headers: { ...authHeaders(token) },
-      });
-      const data = await res.json().catch(() => []);
-      if (!res.ok) throw new Error(data.detail || "Failed to start work session");
-      setWorkers(Array.isArray(data) ? data : []);
-    } catch (ex) {
-      setWorkersErr(ex.message || "Failed to start work session");
-    }
-  }
-
-  async function stopWorking() {
-    try {
-      await fetch(`${API_BASE}/work-orders/${wo.id}/workers/stop`, {
-        method: "POST",
-        headers: { ...authHeaders(token) },
-      });
-    } catch {
-      // ignore
-    }
-  }
-
   useEffect(() => {
-      useEffect(() => {
-    let isMounted = true;
-
-    async function init() {
-      await loadWO();
-      await loadNotes();
-      await startWorking(); // <-- auto check-in
-    }
-
-    init();
+    loadWO();
+    loadNotes();
 
     const t = setInterval(() => {
-      if (!isMounted) return;
       loadWO();
       loadNotes();
-      loadWorkers(); // keep warning up-to-date
     }, 15000);
 
-    return () => {
-      isMounted = false;
-      clearInterval(t);
-      stopWorking(); // <-- auto check-out
-    };
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wo.id]);
-
 
   return (
     <div>
@@ -512,40 +587,6 @@ function WorkOrderDetail({ token, wo, onBack }) {
 
       <h2 style={{ margin: 0 }}>{title}</h2>
       <div style={{ opacity: 0.8, marginBottom: 12 }}>Work order details</div>
-      {/* ACTIVE WORKERS WARNING */}
-      <ActiveWorkersBanner workers={workers} workersErr={workersErr} />
-function ActiveWorkersBanner({ workers, workersErr }) {
-  if (workersErr) {
-    return <div style={{ color: "#b00020", marginBottom: 10 }}>{workersErr}</div>;
-  }
-
-  if (!Array.isArray(workers) || workers.length <= 1) {
-    return null;
-  }
-
-  // Show everyone active (including you) but highlight "others"
-  const names = workers.map((w) => w.name).join(", ");
-
-  return (
-    <div
-      style={{
-        border: "1px solid #f0c36d",
-        background: "#fff7e6",
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 12,
-      }}
-    >
-      <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ Someone else is working on this WO</div>
-      <div style={{ opacity: 0.9 }}>
-        Active workers right now: <b>{names}</b>
-      </div>
-      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
-        You can continue, but communicate to avoid duplicate work.
-      </div>
-    </div>
-  );
-}
 
       {loading && <div>Loading…</div>}
       {err && <div style={{ color: "#b00020" }}>{err}</div>}
@@ -567,9 +608,7 @@ function ActiveWorkersBanner({ workers, workersErr }) {
             Refresh Notes
           </button>
         </div>
-        <div style={{ opacity: 0.75, marginBottom: 10 }}>
-          Add notes for other team members (updates, issues, parts missing, etc.).
-        </div>
+        <div style={{ opacity: 0.75, marginBottom: 10 }}>Add notes for other team members (updates, issues, parts missing, etc.).</div>
 
         <div style={{ display: "grid", gap: 10 }}>
           <textarea
@@ -577,14 +616,7 @@ function ActiveWorkersBanner({ workers, workersErr }) {
             onChange={(e) => setNoteText(e.target.value)}
             placeholder="Type a note…"
             rows={4}
-            style={{
-              width: "100%",
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #ccc",
-              fontFamily: "inherit",
-              fontSize: 14,
-            }}
+            style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ccc", fontFamily: "inherit", fontSize: 14 }}
           />
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <button onClick={addNote} disabled={posting || !noteText.trim()} style={btn()}>
@@ -603,11 +635,9 @@ function ActiveWorkersBanner({ workers, workersErr }) {
                 {notes.map((n) => (
                   <div key={n.id} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-                      <div style={{ fontWeight: 700 }}>{n.author_name}</div>
+                      <div style={{ fontWeight: 800 }}>{n.author_name}</div>
                       <div style={{ fontSize: 12, opacity: 0.7 }}>{new Date(n.created_at).toLocaleString()}</div>
-                      {n.station && (
-                        <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>{n.station}</div>
-                      )}
+                      {n.station && <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>{n.station}</div>}
                     </div>
                     <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{n.text}</div>
                   </div>
@@ -624,10 +654,8 @@ function ActiveWorkersBanner({ workers, workersErr }) {
 function Row({ label, value, mono }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "170px 1fr", padding: "6px 0" }}>
-      <div style={{ fontWeight: 700, opacity: 0.85 }}>{label}</div>
-      <div style={mono ? { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } : {}}>
-        {value}
-      </div>
+      <div style={{ fontWeight: 800, opacity: 0.85 }}>{label}</div>
+      <div style={mono ? { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } : {}}>{value}</div>
     </div>
   );
 }
@@ -639,23 +667,21 @@ function btn(extra = {}) {
     border: "1px solid #bbb",
     background: "#fff",
     cursor: "pointer",
-    fontWeight: 600,
+    fontWeight: 700,
     ...extra,
   };
 }
 
+function btnOn() {
+  return { background: "#111", color: "#fff", border: "1px solid #111" };
+}
+
 function label() {
-  return { display: "grid", gap: 6, fontWeight: 700 };
+  return { display: "grid", gap: 6, fontWeight: 800 };
 }
 
 function input() {
-  return {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #ccc",
-    fontSize: 14,
-    width: "100%",
-  };
+  return { padding: "10px 12px", borderRadius: 10, border: "1px solid #ccc", fontSize: 14, width: "100%" };
 }
 
 createRoot(document.getElementById("root")).render(<App />);
