@@ -3,7 +3,9 @@ uvicorn[standard]
 sqlalchemy
 psycopg[binary]
 python-dotenv
-passlib
+passlib[bcrypt]
+bcrypt==4.0.1
 python-jose[cryptography]
+
 
 
