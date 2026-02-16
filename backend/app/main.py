@@ -353,6 +353,35 @@ def create_user(req: CreateUserRequest, _admin: User = Depends(require_role("adm
     db.commit()
     db.refresh(u)
     return UserOut(id=u.id, name=u.name, role=u.role, is_active=u.is_active)
+class ResetPinRequest(BaseModel):
+    name: str
+    new_pin: str = Field(min_length=4, max_length=6)
+
+
+@app.post("/admin/reset-pin", response_model=UserOut)
+def admin_reset_pin(req: ResetPinRequest, db: Session = Depends(get_db), x_reset_token: Optional[str] = Header(default=None)):
+    expected = os.getenv("RESET_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="RESET_TOKEN not set on server")
+    if not x_reset_token or x_reset_token.strip() != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    name = req.name.strip()
+    user = db.execute(select(User).where(User.name == name)).scalar_one_or_none()
+
+    if user:
+        # reset existing user's PIN and ensure active/admin
+        user.pin_hash = hash_pin(req.new_pin.strip())
+        user.is_active = True
+        user.role = "admin"
+    else:
+        # create if missing
+        user = User(name=name, role="admin", pin_hash=hash_pin(req.new_pin.strip()), is_active=True)
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+    return UserOut(id=user.id, name=user.name, role=user.role, is_active=user.is_active)
 
 
 @app.get("/stations")
