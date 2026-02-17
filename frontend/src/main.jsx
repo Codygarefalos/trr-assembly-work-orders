@@ -1232,7 +1232,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${woId}/mark-complete`, { method: "POST", token });
+                    await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "complete" } });
                     await load();
                     await onRefresh();
                   } catch (e) {
@@ -1247,7 +1247,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${woId}/undo-complete`, { method: "POST", token });
+                    await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "open" } });
                     await load();
                     await onRefresh();
                   } catch (e) {
@@ -1283,7 +1283,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           <button
             onClick={async () => {
               try {
-                await api(`/work-orders/${woId}/reopen`, { method: "POST", token });
+                await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "open" } });
                 await load();
                 await onRefresh();
               } catch (e) {
