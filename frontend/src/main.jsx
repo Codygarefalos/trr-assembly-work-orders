@@ -419,41 +419,45 @@ function AdminPanel({ token, user, onError }) {
   }
 
   async function createPart() {
-    try {
-      if (!partNumber.trim()) throw new Error("Part number is required");
+  try {
+    if (!partNumber.trim()) throw new Error("Part number is required");
 
-      const created = await api("/parts", { method: "POST", token, body: { part_number: partNumber.trim() } });
+    // If backend requires multipart with both fields, send as FormData
+    const fd = new FormData();
+    fd.append("part_number", partNumber.trim());
 
-      if (partFile) {
-        const fd = new FormData();
-        fd.append("file", partFile);
+    // Backend is saying file is required, so enforce it here
+    if (!partFile) throw new Error("Instruction file is required");
+    fd.append("file", partFile);
 
-        const res = await fetch(`${API_BASE}/parts/${created.id}/upload`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: fd,
-        });
+    const res = await fetch(`${API_BASE}/parts`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` }, // DO NOT set Content-Type with FormData
+      body: fd,
+    });
 
-        if (!res.ok) {
-          const text = await res.text();
-          let msg = `${res.status} ${res.statusText}`;
-          try {
-            const j = text ? JSON.parse(text) : null;
-            if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-          } catch {
-            if (text) msg = text;
-          }
-          throw new Error(msg);
-        }
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const j = await res.json();
+        if (typeof j?.detail === "string") msg = j.detail;
+        else if (j?.detail) msg = JSON.stringify(j.detail);
+        else msg = JSON.stringify(j);
+      } catch {
+        try { msg = await res.text(); } catch {}
       }
-
-      setPartNumber("");
-      setPartFile(null);
-      await refresh();
-    } catch (e) {
-      onError(e.message);
+      throw new Error(msg);
     }
+
+    // success
+    setPartNumber("");
+    setPartFile(null);
+    await refresh();
+  } catch (e) {
+    onError(e.message);
   }
+}
+
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
