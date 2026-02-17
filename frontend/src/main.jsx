@@ -1203,23 +1203,26 @@ if (!token) throw new Error("Missing token");
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ fontWeight: 950 }}>Work Instructions</div>
           <div style={{ marginLeft: "auto" }}>
-            {wo.instruction_url ? (
- <button
-  onClick={async () => {
-    try {
-      await openInstructions();
-    } catch (e) {
-      onError(e?.message || String(e));
-    }
-  }}
-  style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
->
-  Open Instructions
-</button>
+  {wo.instruction_url ? (
+    <button
+      onClick={async () => {
+        try {
+          await openFileWithAuth(wo.instruction_url, token);
+        } catch (e) {
+          onError(e.message);
+        }
+      }}
+      style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+    >
+      Open Instructions
+    </button>
+  ) : (
+    <span style={{ opacity: 0.7, fontSize: 13 }}>
+      No instruction file attached for this part yet.
+    </span>
+  )}
+</div>
 
-              <span style={{ opacity: 0.7, fontSize: 13 }}>No instruction file attached for this part yet.</span>
-            )}
-          </div>
         </div>
       </div>
 
