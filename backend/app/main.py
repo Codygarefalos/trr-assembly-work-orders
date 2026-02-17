@@ -35,8 +35,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 
 # PDF
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+
 
 
 # -----------------------------
