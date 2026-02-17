@@ -324,7 +324,6 @@ class OkResponse(BaseModel):
 
 
 class PartOut(BaseModel):
-    class PartOut(BaseModel):
     id: int
     part_number: str
     has_file: bool
@@ -333,6 +332,7 @@ class PartOut(BaseModel):
 
     qty_on_hand: int = 0
     inventory_updated_at: Optional[datetime] = None
+
 
 class InventoryChangeRequest(BaseModel):
     qty: int = Field(ge=1, le=1_000_000)
@@ -408,7 +408,6 @@ class WorkerOut(BaseModel):
     role: str
     started_at: datetime
     is_checked_in: bool = True
-
 
 class WorkerHistoryOut(BaseModel):
     id: int
