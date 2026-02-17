@@ -4,12 +4,13 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Response, Header
+# --- FastAPI app + CORS (DROP-IN REPLACEMENT BLOCK) ---
+from fastapi import FastAPI, Request, Depends, HTTPException, UploadFile, File, Form, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# --- CORS (Render frontend + local dev) ---
 ALLOWED_ORIGINS = {
     "https://trr-assembly-work-orders.onrender.com",
     "http://localhost:5173",
@@ -25,10 +26,12 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-# --- Force-preflight support (OPTIONS) ---
-from fastapi import Request
-from fastapi.responses import Response, JSONResponse
+# Health check to prove THIS code is what Render is running
+@app.get("/__health")
+def __health():
+    return {"ok": True, "service": "trr-assembly-api", "cors": "enabled"}
 
+# Force-preflight support for PATCH/Authorization (OPTIONS)
 @app.options("/{path:path}")
 async def preflight(path: str, request: Request):
     origin = request.headers.get("origin")
@@ -41,9 +44,10 @@ async def preflight(path: str, request: Request):
             "access-control-request-headers",
             "Authorization,Content-Type",
         )
+        headers["Access-Control-Max-Age"] = "86400"
     return Response(status_code=200, headers=headers)
 
-# --- Ensure CORS headers are present even on unhandled 500 errors ---
+# Ensure the browser can READ 500 errors (so you don't just see "CORS blocked")
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin")
@@ -53,6 +57,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"}, headers=headers)
 
+# --- keep your existing imports below this line exactly as they were ---
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
