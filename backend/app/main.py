@@ -8,6 +8,7 @@ from typing import Optional, List
 from fastapi import FastAPI, Request, Depends, HTTPException, UploadFile, File, Form, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 app = FastAPI()
 
@@ -511,38 +512,50 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+import os
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 @app.post("/parts")
 def create_part(
     part_number: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    if not part_number:
+    if not part_number or not part_number.strip():
         raise HTTPException(status_code=400, detail="part_number required")
 
-    try:
-        # --- Save file safely ---
-        filename = file.filename or f"{part_number}.pdf"
-        filepath = os.path.join(UPLOAD_DIR, filename)
+    # Save file first
+    filename = file.filename or f"{part_number.strip()}.pdf"
+    filepath = os.path.join(UPLOAD_DIR, filename)
 
+    try:
         with open(filepath, "wb") as f:
             f.write(file.file.read())
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
 
-        # --- Create DB record ---
-        part = Part(
-            part_number=part_number,
-            filename=filename,
-            file_path=filepath,
-        )
+    # Create DB record
+    part = Part(
+        part_number=part_number.strip(),
+        filename=filename,
+        file_path=filepath,
+    )
 
-        db.add(part)
-        db.commit()
-        db.refresh(part)
+    db.add(part)
+    db.commit()
+    db.refresh(part)
 
-        return {"id": part.id, "part_number": part.part_number}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create part: {str(e)}")
+    return {
+        "id": part.id,
+        "part_number": part.part_number,
+        "filename": part.filename,
+        "has_file": True,
+    }
 
 
 
