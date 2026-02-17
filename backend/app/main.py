@@ -93,6 +93,40 @@ class Part(Base):
 
     uploaded_by: Mapped[Optional["User"]] = relationship()
 
+class Inventory(Base):
+    __tablename__ = "inventory"
+
+    part_id: Mapped[int] = mapped_column(ForeignKey("parts.id"), primary_key=True)
+    qty_on_hand: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    part: Mapped["Part"] = relationship()
+
+
+class InventoryTxn(Base):
+    __tablename__ = "inventory_txn"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    part_id: Mapped[int] = mapped_column(ForeignKey("parts.id"), index=True)
+
+    txn_type: Mapped[str] = mapped_column(String(20))  # RECEIVE | ISSUE | ADJUST
+    qty_delta: Mapped[int] = mapped_column(Integer)
+
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ref_wo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("work_orders.id"), nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    part: Mapped["Part"] = relationship()
+    user: Mapped[Optional["User"]] = relationship()
+
 
 class WorkOrder(Base):
     __tablename__ = "work_orders"
@@ -291,11 +325,32 @@ class OkResponse(BaseModel):
 
 
 class PartOut(BaseModel):
+    class PartOut(BaseModel):
     id: int
     part_number: str
     has_file: bool
     filename: Optional[str] = None
     uploaded_at: Optional[datetime] = None
+
+    qty_on_hand: int = 0
+    inventory_updated_at: Optional[datetime] = None
+
+class InventoryChangeRequest(BaseModel):
+    qty: int = Field(ge=1, le=1_000_000)
+    note: Optional[str] = None
+    ref_wo_id: Optional[int] = None
+
+
+class InventoryTxnOut(BaseModel):
+    id: int
+    part_id: int
+    txn_type: str
+    qty_delta: int
+    note: Optional[str]
+    ref_wo_id: Optional[int]
+    user_id: Optional[int]
+    created_at: datetime
+
 
 
 class CreatePartRequest(BaseModel):
@@ -559,6 +614,14 @@ def stations(_user: User = Depends(require_user)):
 @app.get("/parts", response_model=List[PartOut])
 def list_parts(_u: User = Depends(require_role("admin", "supervisor")), db: Session = Depends(get_db)):
     parts = db.execute(select(Part).order_by(Part.part_number.asc())).scalars().all()
+    if not parts:
+        return []
+
+    inv_rows = db.execute(
+        select(Inventory).where(Inventory.part_id.in_([p.id for p in parts]))
+    ).scalars().all()
+    inv_map = {i.part_id: i for i in inv_rows}
+
     return [
         PartOut(
             id=p.id,
@@ -566,6 +629,8 @@ def list_parts(_u: User = Depends(require_role("admin", "supervisor")), db: Sess
             has_file=bool(p.content),
             filename=p.filename,
             uploaded_at=p.uploaded_at,
+            qty_on_hand=int(inv_map.get(p.id).qty_on_hand) if inv_map.get(p.id) else 0,
+            inventory_updated_at=inv_map.get(p.id).updated_at if inv_map.get(p.id) else None,
         )
         for p in parts
     ]
@@ -585,6 +650,19 @@ def create_part(req: CreatePartRequest, _u: User = Depends(require_role("admin",
     db.add(p)
     db.commit()
     db.refresh(p)
+# ensure inventory row exists
+inv = db.get(Inventory, p.id)
+return PartOut(
+    id=p.id,
+    part_number=p.part_number,
+    has_file=bool(p.content),
+    filename=p.filename,
+    uploaded_at=p.uploaded_at,
+    qty_on_hand=inv.qty_on_hand if inv else 0,
+    inventory_updated_at=inv.updated_at if inv else None,
+)
+
+
     return PartOut(id=p.id, part_number=p.part_number, has_file=False, filename=None, uploaded_at=None)
 
 
@@ -669,6 +747,130 @@ def download_part_instructions(
     mime = p.mime_type or "application/octet-stream"
     headers = {"Content-Disposition": f'inline; filename="{filename}"'}
     return StreamingResponse(iter([p.content]), media_type=mime, headers=headers)
+def get_or_create_inventory(db: Session, part_id: int) -> Inventory:
+    inv = db.get(Inventory, part_id)
+    if not inv:
+        inv = Inventory(part_id=part_id, qty_on_hand=0, updated_at=datetime.now(timezone.utc))
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+    return inv
+
+
+@app.post("/parts/{part_id}/inventory/receive", response_model=PartOut)
+def inventory_receive(
+    part_id: int,
+    req: InventoryChangeRequest,
+    user: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    p = db.get(Part, part_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    inv = get_or_create_inventory(db, part_id)
+    inv.qty_on_hand += int(req.qty)
+    inv.updated_at = datetime.now(timezone.utc)
+
+    db.add(
+        InventoryTxn(
+            part_id=part_id,
+            txn_type="RECEIVE",
+            qty_delta=int(req.qty),
+            note=(req.note.strip() if req.note else None),
+            ref_wo_id=req.ref_wo_id,
+            user_id=user.id,
+        )
+    )
+    db.commit()
+    db.refresh(inv)
+
+    return PartOut(
+        id=p.id,
+        part_number=p.part_number,
+        has_file=bool(p.content),
+        filename=p.filename,
+        uploaded_at=p.uploaded_at,
+        qty_on_hand=inv.qty_on_hand,
+        inventory_updated_at=inv.updated_at,
+    )
+
+
+@app.post("/parts/{part_id}/inventory/issue", response_model=PartOut)
+def inventory_issue(
+    part_id: int,
+    req: InventoryChangeRequest,
+    user: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+):
+    p = db.get(Part, part_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    inv = get_or_create_inventory(db, part_id)
+    qty = int(req.qty)
+
+    if inv.qty_on_hand < qty:
+        raise HTTPException(status_code=400, detail=f"Not enough inventory. On hand: {inv.qty_on_hand}")
+
+    inv.qty_on_hand -= qty
+    inv.updated_at = datetime.now(timezone.utc)
+
+    db.add(
+        InventoryTxn(
+            part_id=part_id,
+            txn_type="ISSUE",
+            qty_delta=-qty,
+            note=(req.note.strip() if req.note else None),
+            ref_wo_id=req.ref_wo_id,
+            user_id=user.id,
+        )
+    )
+    db.commit()
+    db.refresh(inv)
+
+    return PartOut(
+        id=p.id,
+        part_number=p.part_number,
+        has_file=bool(p.content),
+        filename=p.filename,
+        uploaded_at=p.uploaded_at,
+        qty_on_hand=inv.qty_on_hand,
+        inventory_updated_at=inv.updated_at,
+    )
+
+
+@app.get("/parts/{part_id}/inventory/txns", response_model=List[InventoryTxnOut])
+def inventory_txns(
+    part_id: int,
+    _u: User = Depends(require_role("admin", "supervisor")),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    p = db.get(Part, part_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    rows = db.execute(
+        select(InventoryTxn)
+        .where(InventoryTxn.part_id == part_id)
+        .order_by(InventoryTxn.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+
+    return [
+        InventoryTxnOut(
+            id=r.id,
+            part_id=r.part_id,
+            txn_type=r.txn_type,
+            qty_delta=r.qty_delta,
+            note=r.note,
+            ref_wo_id=r.ref_wo_id,
+            user_id=r.user_id,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 # -----------------------------
