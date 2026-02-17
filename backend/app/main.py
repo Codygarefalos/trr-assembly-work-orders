@@ -537,21 +537,20 @@ def create_part(
     return OkResponse()
 
 
-@app.get("/parts/{part_id}/file")
-def download_part_file(part_id: int, _: User = Depends(get_current_user), s: Session = Depends(db)):
-    p = s.query(Part).filter(Part.id == part_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Part not found")
-    if not p.file_path or not os.path.exists(p.file_path):
-        raise HTTPException(status_code=404, detail="No file for this part")
+@app.get("/parts/{id}/file")
+def get_part_file(id: int, db: Session = Depends(get_db)):
+    part = db.query(Part).filter(Part.id == id).first()
+    if not part or not part.file_path:
+        raise HTTPException(status_code=404, detail="File not found")
 
-    with open(p.file_path, "rb") as f:
-        data = f.read()
-
-    headers = {
-        "Content-Disposition": f'inline; filename="{p.filename or "part.pdf"}"'
-    }
-    return Response(content=data, media_type="application/octet-stream", headers=headers)
+    try:
+        return FileResponse(
+            part.file_path,
+            filename=part.filename or "instructions.pdf",
+            media_type="application/octet-stream",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # -----------------------------
@@ -726,38 +725,44 @@ def get_work_order(wo_id: int, _: User = Depends(get_current_user), s: Session =
     )
 
 
-@app.patch("/work-orders/{wo_id}", response_model=OkResponse)
-def update_work_order(wo_id: int, req: UpdateWORequest, u: User = Depends(get_current_user), s: Session = Depends(db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
+@app.patch("/work-orders/{wo_id}")
+def update_work_order(
+    wo_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    wo = db.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
+    if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
-    if req.station is not None:
-        w.station = req.station.strip()
-    if req.customer_order is not None:
-        w.customer_order = req.customer_order
-    if req.is_stock is not None:
-        w.is_stock = bool(req.is_stock)
+    # ---- SAFE FIELD UPDATES (only update what is provided) ----
 
-    if req.part_id is not None:
-        if req.part_id:
-            p = s.query(Part).filter(Part.id == req.part_id).first()
-            if not p:
-                raise HTTPException(status_code=400, detail="Invalid part_id")
-            w.part_id = p.id
-            w.part_number = p.part_number
-        else:
-            w.part_id = None
+    if "station" in payload:
+        wo.station = payload["station"]
 
-    if req.status is not None:
-        if u.role not in ("admin", "supervisor"):
-            raise HTTPException(status_code=403, detail="Forbidden")
-        if req.status not in ("open", "closed", "hold"):
-            raise HTTPException(status_code=400, detail="Invalid status")
-        w.status = req.status
+    if "part_id" in payload:
+        wo.part_id = payload["part_id"]
 
-    s.commit()
-    return OkResponse()
+    if "is_stock" in payload:
+        wo.is_stock = bool(payload["is_stock"])
+
+    if "customer_order" in payload:
+        # IMPORTANT: stock jobs MUST allow NULL
+        wo.customer_order = payload["customer_order"] or None
+
+    if "status" in payload:
+        new_status = str(payload["status"]).lower()
+
+        if new_status not in {"open", "in_progress", "complete", "closed"}:
+            raise HTTPException(status_code=400, detail=f"Invalid status '{new_status}'")
+
+        wo.status = new_status
+
+    db.commit()
+    db.refresh(wo)
+
+    return {"ok": True, "status": wo.status}
+
 
 
 # -----------------------------
