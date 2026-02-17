@@ -25,7 +25,6 @@ app.add_middleware(
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
-)
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
 
 from passlib.context import CryptContext
