@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+# --- CORS (Render frontend + local dev) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -16,11 +17,28 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
+    allow_origin_regex=r"^https:\/\/trr-assembly-work-orders\.onrender\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
+# --- Ensure CORS headers are present even on unhandled 500 errors ---
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # IMPORTANT: Keep response readable by the browser (avoids "CORS blocked" hiding the real issue)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+        headers={
+            "Access-Control-Allow-Origin": "https://trr-assembly-work-orders.onrender.com",
+            "Access-Control-Allow-Credentials": "true",
+        },
+    )
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -32,7 +50,6 @@ from jose import jwt, JWTError
 
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-
 
 # -----------------------------
 # Config
