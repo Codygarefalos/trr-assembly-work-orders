@@ -84,7 +84,6 @@ class User(Base):
     role = Column(String(30), nullable=False, default="assembler")  # assembler|supervisor|admin
     pin_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Part(Base):
@@ -353,14 +352,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
-    # Ensure at least one admin exists (optional)
-    # Comment this out if you don't want auto-admin.
-    with SessionLocal() as s:
-        existing = s.query(User).count()
-        if existing == 0:
-            admin = User(name="admin", role="admin", pin_hash=hash_pin("1234"), is_active=True)
-            s.add(admin)
-            s.commit()
+
 
 
 # -----------------------------
