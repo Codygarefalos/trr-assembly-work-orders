@@ -148,8 +148,8 @@ class Part(Base):
     description = Column(String(255), nullable=True)
 
     # file
-   filename = Column(String, nullable=True)
-   file_path = Column(String, nullable=True)
+    filename = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
 
     # inventory
