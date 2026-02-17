@@ -1216,7 +1216,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
             <button
               onClick={async () => {
                 try {
-                  await api(`/work-orders/${woId}/workers/${isMeCheckedIn ? "stop" : "start"}`, { method: "POST", token });
+                  await api(`/work-orders/${woId}/workers/${isMeCheckedIn ? "check-out" : "check-in"}`, { method: "POST", token });
                   await load();
                   await onRefresh();
                 } catch (e) {
