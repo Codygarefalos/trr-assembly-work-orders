@@ -7,6 +7,8 @@ from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI()  # ✅ app must exist before add_middleware()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -17,14 +19,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],  # helpful for downloads
+    expose_headers=["Content-Disposition"],
 )
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-
-from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
 
