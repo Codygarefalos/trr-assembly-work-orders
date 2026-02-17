@@ -163,11 +163,14 @@ function App() {
       <div style={{ marginTop: 16 }}>
         {!token ? (
           <Login onLogin={onLogin} onError={setError} />
-        ) : page === "admin" && (user?.role === "admin" || user?.role === "supervisor") ? (
-          <AdminPanel token={token} user={user} onError={setError} />
-        ) : (
-          <WorkOrders token={token} user={user} onError={setError} />
-        )}
+        ) : page === "inventory" && (user?.role === "admin" || user?.role === "supervisor") ? (
+  <InventoryPage token={token} user={user} onError={setError} />
+) : page === "admin" && (user?.role === "admin" || user?.role === "supervisor") ? (
+  <AdminPanel token={token} user={user} onError={setError} />
+) : (
+  <WorkOrders token={token} user={user} onError={setError} />
+)}
+
       </div>
     </div>
   );
@@ -189,13 +192,30 @@ function Header({ user, onLogout, page, setPage }) {
         {user ? <div style={{ opacity: 0.85, fontWeight: 700 }}>{user.name} ({user.role})</div> : null}
 
         {user && canAdmin ? (
-          <button
-            onClick={() => setPage(page === "admin" ? "workorders" : "admin")}
-            style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
-          >
-            {page === "admin" ? "Work Orders" : "Admin"}
-          </button>
-        ) : null}
+  <>
+    <button
+      onClick={() => setPage("workorders")}
+      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "workorders" ? "#f6f8ff" : "white", fontWeight: 900 }}
+    >
+      Work Orders
+    </button>
+
+    <button
+      onClick={() => setPage("inventory")}
+      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "inventory" ? "#f6f8ff" : "white", fontWeight: 900 }}
+    >
+      Inventory
+    </button>
+
+    <button
+      onClick={() => setPage("admin")}
+      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "admin" ? "#f6f8ff" : "white", fontWeight: 900 }}
+    >
+      Admin
+    </button>
+  </>
+) : null}
+
 
         {user ? (
           <button onClick={onLogout} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}>
@@ -301,6 +321,166 @@ function AdminPanel({ token, user, onError }) {
       onError(e.message);
     }
   }
+function InventoryPage({ token, user, onError }) {
+  const [parts, setParts] = React.useState([]);
+  const [q, setQ] = React.useState("");
+  const [qtyMap, setQtyMap] = React.useState({});
+  const [txnsPart, setTxnsPart] = React.useState(null);
+  const [txns, setTxns] = React.useState([]);
+
+  const canManage = user?.role === "admin" || user?.role === "supervisor";
+
+  async function refresh() {
+    try {
+      const p = await api("/parts", { token });
+      setParts(p || []);
+    } catch (e) {
+      onError(e.message);
+      setParts([]);
+    }
+  }
+
+  React.useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filtered = parts.filter((p) => {
+    if (!q.trim()) return true;
+    return String(p.part_number || "").toLowerCase().includes(q.trim().toLowerCase());
+  });
+
+  function getQty(partId) {
+    const raw = qtyMap[partId] ?? 1;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  }
+
+  async function receive(partId) {
+    const qty = getQty(partId);
+    await api(`/parts/${partId}/inventory/receive`, { method: "POST", token, body: { qty, note: "Received" } });
+    await refresh();
+  }
+
+  async function issue(partId) {
+    const qty = getQty(partId);
+    await api(`/parts/${partId}/inventory/issue`, { method: "POST", token, body: { qty, note: "Issued/Sold" } });
+    await refresh();
+  }
+
+  async function openTxns(part) {
+    try {
+      const rows = await api(`/parts/${part.id}/inventory/txns?limit=200`, { token });
+      setTxns(rows || []);
+      setTxnsPart(part);
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <h2 style={{ margin: 0 }}>Inventory</h2>
+
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search part number…"
+          style={{ marginLeft: 10, padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", minWidth: 240 }}
+        />
+
+        <button
+          style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
+          onClick={() => refresh().catch((e) => onError(e.message))}
+        >
+          Refresh
+        </button>
+      </div>
+
+      <div style={{ border: "1px solid #eee", borderRadius: 14, overflow: "hidden", background: "white" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr .6fr 1fr", gap: 10, padding: 12, borderBottom: "1px solid #eee", background: "#fafafa", fontWeight: 900 }}>
+          <div>Part</div>
+          <div>On Hand</div>
+          <div style={{ textAlign: "right" }}>Actions</div>
+        </div>
+
+        {filtered.map((p) => (
+          <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1.3fr .6fr 1fr", gap: 10, padding: 12, borderBottom: "1px solid #eee", alignItems: "center" }}>
+            <div style={{ fontWeight: 950 }}>{p.part_number}</div>
+
+            <div style={{ fontWeight: 900 }}>
+              {typeof p.qty_on_hand === "number" ? p.qty_on_hand : 0}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                onClick={() => openTxns(p)}
+                style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+              >
+                History
+              </button>
+
+              {canManage ? (
+                <>
+                  <input
+                    type="number"
+                    min="1"
+                    value={qtyMap[p.id] ?? 1}
+                    onChange={(e) => setQtyMap((m) => ({ ...m, [p.id]: e.target.value }))}
+                    style={{ width: 80, padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd" }}
+                  />
+
+                  <button
+                    onClick={async () => {
+                      try { await receive(p.id); } catch (e) { onError(e.message); }
+                    }}
+                    style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                  >
+                    Receive
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      try { await issue(p.id); } catch (e) { onError(e.message); }
+                    }}
+                    style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                  >
+                    Issue
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ))}
+
+        {filtered.length === 0 ? <div style={{ padding: 12, opacity: 0.7 }}>No parts match.</div> : null}
+      </div>
+
+      {txnsPart ? (
+        <Modal title={`Inventory History: ${txnsPart.part_number}`} onClose={() => { setTxnsPart(null); setTxns([]); }}>
+          <div style={{ display: "grid", gap: 10 }}>
+            {txns.length === 0 ? <div style={{ opacity: 0.7 }}>No transactions yet.</div> : null}
+
+            {txns.map((t) => (
+              <div key={t.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14 }}>
+                <div style={{ display: "flex", gap: 10, fontSize: 13, opacity: 0.85 }}>
+                  <div><b>{t.txn_type}</b></div>
+                  <div>{new Date(t.created_at).toLocaleString()}</div>
+                  <div style={{ marginLeft: "auto" }}>
+                    <b>Δ</b> {t.qty_delta}
+                  </div>
+                </div>
+                {t.note ? <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{t.note}</div> : null}
+                {t.ref_wo_id ? <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>WO ID: {t.ref_wo_id}</div> : null}
+              </div>
+            ))}
+          </div>
+        </Modal>
+      ) : null}
+    </div>
+  );
+}
 
   async function resetPinViaHeader() {
     try {
