@@ -5,33 +5,49 @@ import logo from "./assets/logo.png";
 const API_BASE = (import.meta.env.VITE_API_BASE || "https://trr-assembly-api.onrender.com").replace(/\/+$/, "");
 const IDLE_LOGOUT_MINUTES = 30;
 
+/**
+ * Robust API helper:
+ * - Always parses FastAPI error bodies (detail)
+ * - Avoids JSON parse crashes
+ * - Sets Content-Type only when sending JSON
+ */
 async function api(path, { method = "GET", token, body } = {}) {
+  const hasBody = body !== undefined;
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
-      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
 
-if (!res.ok) {
-  let msg = `${res.status} ${res.statusText}`;
-  try {
-    const j = await res.json();
-    if (typeof j?.detail === "string") msg = j.detail;
-    else if (j?.detail) msg = JSON.stringify(j.detail);
-    else msg = JSON.stringify(j);
-  } catch {
-    try { msg = await res.text(); } catch {}
-  }
-  throw new Error(msg);
-}
-
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text || null;
+  }
+
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    if (data && typeof data === "object") {
+      if (typeof data.detail === "string") msg = data.detail;
+      else if (data.detail) msg = JSON.stringify(data.detail);
+      else msg = JSON.stringify(data);
+    } else if (typeof data === "string" && data.trim()) {
+      msg = data;
+    }
+    throw new Error(msg);
+  }
+
+  return data;
 }
 
+/**
+ * Opens protected file endpoints using Authorization header.
+ */
 async function openFileWithAuth(fileUrl, token) {
   const absolute = fileUrl.startsWith("http") ? fileUrl : `${API_BASE}${fileUrl}`;
   const res = await fetch(absolute, { headers: { Authorization: `Bearer ${token}` } });
@@ -39,7 +55,7 @@ async function openFileWithAuth(fileUrl, token) {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const j = await res.json();
-      if (j?.detail) msg = j.detail;
+      if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
     } catch {}
     throw new Error(msg);
   }
@@ -50,6 +66,9 @@ async function openFileWithAuth(fileUrl, token) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+/**
+ * Idle logout
+ */
 function useIdleLogout(onLogout) {
   React.useEffect(() => {
     let t = null;
@@ -74,10 +93,33 @@ function safeParse(raw) {
     return null;
   }
 }
+
+/**
+ * Timestamp formatting:
+ * - Forces America/Chicago display
+ * - If backend sends "naive" ISO (no Z / offset), assume UTC and append Z
+ */
+function normalizeIsoForDate(iso) {
+  if (!iso) return "";
+  const s = String(iso).trim();
+
+  // If string already has timezone info (Z or +/-hh:mm), keep it
+  if (/[zZ]$/.test(s) || /[+\-]\d{2}:\d{2}$/.test(s)) return s;
+
+  // If it looks like ISO without timezone, treat as UTC by appending Z
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) return `${s}Z`;
+
+  return s;
+}
+
 function fmtDT(iso) {
   if (!iso) return "";
   try {
-    return new Date(iso).toLocaleString("en-US", {
+    const normalized = normalizeIsoForDate(iso);
+    const d = new Date(normalized);
+    if (Number.isNaN(d.getTime())) return String(iso);
+
+    return d.toLocaleString("en-US", {
       timeZone: "America/Chicago",
       year: "numeric",
       month: "2-digit",
@@ -135,6 +177,17 @@ function Modal({ title, children, onClose }) {
   );
 }
 
+/**
+ * STATUS helpers:
+ * We do NOT break if backend sends different casing.
+ * We'll show unknown status as a warning, not crash the page.
+ */
+const KNOWN_STATUSES = ["open", "in_progress", "complete", "closed", "completed"]; // allow "completed" just in case
+
+function normStatus(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem("trr_token") || "");
   const [user, setUser] = React.useState(() => safeParse(localStorage.getItem("trr_user")));
@@ -184,13 +237,12 @@ function App() {
         {!token ? (
           <Login onLogin={onLogin} onError={setError} />
         ) : page === "inventory" && (user?.role === "admin" || user?.role === "supervisor") ? (
-  <InventoryPage token={token} user={user} onError={setError} />
-) : page === "admin" && (user?.role === "admin" || user?.role === "supervisor") ? (
-  <AdminPanel token={token} user={user} onError={setError} />
-) : (
-  <WorkOrders token={token} user={user} onError={setError} />
-)}
-
+          <InventoryPage token={token} user={user} onError={setError} />
+        ) : page === "admin" && (user?.role === "admin" || user?.role === "supervisor") ? (
+          <AdminPanel token={token} user={user} onError={setError} />
+        ) : (
+          <WorkOrders token={token} user={user} onError={setError} />
+        )}
       </div>
     </div>
   );
@@ -209,33 +261,36 @@ function Header({ user, onLogout, page, setPage }) {
       </div>
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-        {user ? <div style={{ opacity: 0.85, fontWeight: 700 }}>{user.name} ({user.role})</div> : null}
+        {user ? (
+          <div style={{ opacity: 0.85, fontWeight: 700 }}>
+            {user.name} ({user.role})
+          </div>
+        ) : null}
 
         {user && canAdmin ? (
-  <>
-    <button
-      onClick={() => setPage("workorders")}
-      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "workorders" ? "#f6f8ff" : "white", fontWeight: 900 }}
-    >
-      Work Orders
-    </button>
+          <>
+            <button
+              onClick={() => setPage("workorders")}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "workorders" ? "#f6f8ff" : "white", fontWeight: 900 }}
+            >
+              Work Orders
+            </button>
 
-    <button
-      onClick={() => setPage("inventory")}
-      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "inventory" ? "#f6f8ff" : "white", fontWeight: 900 }}
-    >
-      Inventory
-    </button>
+            <button
+              onClick={() => setPage("inventory")}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "inventory" ? "#f6f8ff" : "white", fontWeight: 900 }}
+            >
+              Inventory
+            </button>
 
-    <button
-      onClick={() => setPage("admin")}
-      style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "admin" ? "#f6f8ff" : "white", fontWeight: 900 }}
-    >
-      Admin
-    </button>
-  </>
-) : null}
-
+            <button
+              onClick={() => setPage("admin")}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: page === "admin" ? "#f6f8ff" : "white", fontWeight: 900 }}
+            >
+              Admin
+            </button>
+          </>
+        ) : null}
 
         {user ? (
           <button onClick={onLogout} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}>
@@ -328,7 +383,6 @@ function AdminPanel({ token, user, onError }) {
 
   async function createUser() {
     try {
-      // ✅ YOUR REAL createUser code here (NO "...")
       await api("/users", { method: "POST", token, body: { name: newName, role: newRole, pin: newPin } });
       setNewName("");
       setNewRole("assembler");
@@ -351,7 +405,7 @@ function AdminPanel({ token, user, onError }) {
         let msg = `${res.status} ${res.statusText}`;
         try {
           const j = await res.json();
-          if (j?.detail) msg = j.detail;
+          if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
         } catch {}
         throw new Error(msg);
       }
@@ -381,11 +435,14 @@ function AdminPanel({ token, user, onError }) {
         });
 
         if (!res.ok) {
+          const text = await res.text();
           let msg = `${res.status} ${res.statusText}`;
           try {
-            const j = await res.json();
-            if (j?.detail) msg = j.detail;
-          } catch {}
+            const j = text ? JSON.parse(text) : null;
+            if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+          } catch {
+            if (text) msg = text;
+          }
           throw new Error(msg);
         }
       }
@@ -398,244 +455,238 @@ function AdminPanel({ token, user, onError }) {
     }
   }
 
-return (
-  <div style={{ display: "grid", gap: 16 }}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <h2 style={{ margin: 0 }}>Admin</h2>
-      <button
-        style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
-        onClick={() => refresh()}
-      >
-        Refresh
-      </button>
-    </div>
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <h2 style={{ margin: 0 }}>Admin</h2>
+        <button
+          style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", cursor: "pointer", background: "white" }}
+          onClick={() => refresh()}
+        >
+          Refresh
+        </button>
+      </div>
 
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-      <Card title="Create User (Admin only)">
-        <div style={{ display: "grid", gap: 10 }}>
-          {!isAdmin ? <div style={{ opacity: 0.7 }}>Only admins can create users.</div> : null}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Card title="Create User (Admin only)">
+          <div style={{ display: "grid", gap: 10 }}>
+            {!isAdmin ? <div style={{ opacity: 0.7 }}>Only admins can create users.</div> : null}
 
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>Name</div>
-            <input value={newName} onChange={(e) => setNewName(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>Name</div>
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
 
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>Role</div>
-            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
-              <option value="assembler">assembler</option>
-              <option value="supervisor">supervisor</option>
-              <option value="admin">admin</option>
-            </select>
-          </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>Role</div>
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+                <option value="assembler">assembler</option>
+                <option value="supervisor">supervisor</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
 
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>PIN</div>
-            <input value={newPin} onChange={(e) => setNewPin(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>PIN</div>
+              <input value={newPin} onChange={(e) => setNewPin(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
 
-          <button
-            disabled={!isAdmin}
-            onClick={createUser}
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: isAdmin ? "#111" : "#888",
-              color: "white",
-              cursor: isAdmin ? "pointer" : "not-allowed",
-              fontWeight: 900,
-            }}
-          >
-            Create User
-          </button>
-        </div>
-      </Card>
+            <button
+              disabled={!isAdmin}
+              onClick={createUser}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #111",
+                background: isAdmin ? "#111" : "#888",
+                color: "white",
+                cursor: isAdmin ? "pointer" : "not-allowed",
+                fontWeight: 900,
+              }}
+            >
+              Create User
+            </button>
+          </div>
+        </Card>
 
-      <Card title="Reset User PIN (Admin only)">
-        <div style={{ display: "grid", gap: 10 }}>
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>RESET_TOKEN</div>
-            <input value={resetToken} onChange={(e) => setResetToken(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
+        <Card title="Reset User PIN (Admin only)">
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>RESET_TOKEN</div>
+              <input value={resetToken} onChange={(e) => setResetToken(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
 
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>User Name</div>
-            <input value={resetName} onChange={(e) => setResetName(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>User Name</div>
+              <input value={resetName} onChange={(e) => setResetName(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
 
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>New PIN</div>
-            <input value={resetPin} onChange={(e) => setResetPin(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>New PIN</div>
+              <input value={resetPin} onChange={(e) => setResetPin(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
 
-          <button
-            disabled={!isAdmin}
-            onClick={resetPinViaHeader}
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: isAdmin ? "#111" : "#888",
-              color: "white",
-              cursor: isAdmin ? "pointer" : "not-allowed",
-              fontWeight: 900,
-            }}
-          >
-            Reset PIN
-          </button>
-        </div>
-      </Card>
-    </div>
+            <button
+              disabled={!isAdmin}
+              onClick={resetPinViaHeader}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #111",
+                background: isAdmin ? "#111" : "#888",
+                color: "white",
+                cursor: isAdmin ? "pointer" : "not-allowed",
+                fontWeight: 900,
+              }}
+            >
+              Reset PIN
+            </button>
+          </div>
+        </Card>
+      </div>
 
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-      <Card title="Users">
-        <div style={{ display: "grid", gap: 8 }}>
-          {users.map((u) => (
-            <div key={u.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
-              <div style={{ fontWeight: 950 }}>{u.name}</div>
-              <div style={{ opacity: 0.85 }}>{u.role}</div>
-              <div style={{ marginLeft: "auto", opacity: 0.8 }}>{u.is_active ? "active" : "inactive"}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Card title="Users">
+          <div style={{ display: "grid", gap: 8 }}>
+            {users.map((u) => (
+              <div key={u.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ fontWeight: 950 }}>{u.name}</div>
+                <div style={{ opacity: 0.85 }}>{u.role}</div>
+                <div style={{ marginLeft: "auto", opacity: 0.8 }}>{u.is_active ? "active" : "inactive"}</div>
 
-              {isAdmin ? (
-                <>
-                  <button
-                    onClick={() => setEditUser(u)}
-                    style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
-                  >
-                    Edit
-                  </button>
+                {isAdmin ? (
+                  <>
+                    <button
+                      onClick={() => setEditUser(u)}
+                      style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                    >
+                      Edit
+                    </button>
 
-                  <button
-                    onClick={async () => {
-                      try {
-                        if (!confirm(`Delete ${u.name}?`)) return;
-                        await api(`/users/${u.id}`, { method: "DELETE", token });
-                        await refresh();
-                      } catch (e) {
-                        onError(e.message);
-                      }
-                    }}
-                    style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
-                  >
-                    Delete
-                  </button>
-                </>
-              ) : null}
-            </div>
-          ))}
-          {users.length === 0 ? <div style={{ opacity: 0.7 }}>No users yet.</div> : null}
-        </div>
-      </Card>
-
-      <Card title="Parts Database (Supervisor/Admin)">
-        <div style={{ display: "grid", gap: 10 }}>
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>Part Number</div>
-            <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-          </label>
-
-          <label style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 800 }}>Instruction File (optional)</div>
-            <input type="file" onChange={(e) => setPartFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <button
-            onClick={createPart}
-            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
-          >
-            Add Part (and upload file if chosen)
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          {parts.map((p) => {
-            const downloadUrl = p.has_file ? `/parts/${p.id}/download` : null;
-            return (
-              <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={{ fontWeight: 950 }}>{p.part_number}</div>
-                <div style={{ opacity: 0.8, fontSize: 13 }}>{p.filename || (p.has_file ? "file uploaded" : "")}</div>
-
-                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                  {downloadUrl ? (
                     <button
                       onClick={async () => {
                         try {
-                          await openFileWithAuth(downloadUrl, token);
+                          if (!confirm(`Delete ${u.name}?`)) return;
+                          await api(`/users/${u.id}`, { method: "DELETE", token });
+                          await refresh();
                         } catch (e) {
                           onError(e.message);
                         }
                       }}
+                      style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
+                    >
+                      Delete
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ))}
+            {users.length === 0 ? <div style={{ opacity: 0.7 }}>No users yet.</div> : null}
+          </div>
+        </Card>
+
+        <Card title="Parts Database (Supervisor/Admin)">
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>Part Number</div>
+              <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
+
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800 }}>Instruction File (optional)</div>
+              <input type="file" onChange={(e) => setPartFile(e.target.files?.[0] || null)} />
+            </label>
+
+            <button onClick={createPart} style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}>
+              Add Part (and upload file if chosen)
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            {parts.map((p) => {
+              const downloadUrl = p.has_file ? `/parts/${p.id}/download` : null;
+              return (
+                <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14, display: "flex", gap: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 950 }}>{p.part_number}</div>
+                  <div style={{ opacity: 0.8, fontSize: 13 }}>{p.filename || (p.has_file ? "file uploaded" : "")}</div>
+
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                    {downloadUrl ? (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await openFileWithAuth(downloadUrl, token);
+                          } catch (e) {
+                            onError(e.message);
+                          }
+                        }}
+                        style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+                      >
+                        Open
+                      </button>
+                    ) : (
+                      <span style={{ opacity: 0.6, fontSize: 12 }}>No file</span>
+                    )}
+
+                    <button
+                      onClick={() => setEditPart(p)}
                       style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
                     >
-                      Open
+                      Edit
                     </button>
-                  ) : (
-                    <span style={{ opacity: 0.6, fontSize: 12 }}>No file</span>
-                  )}
 
-                  <button
-                    onClick={() => setEditPart(p)}
-                    style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
-                  >
-                    Edit
-                  </button>
-
-                  <button
-                    onClick={async () => {
-                      try {
-                        if (!confirm(`Delete part ${p.part_number}?`)) return;
-                        await api(`/parts/${p.id}`, { method: "DELETE", token });
-                        await refresh();
-                      } catch (e) {
-                        onError(e.message);
-                      }
-                    }}
-                    style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
-                  >
-                    Delete
-                  </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          if (!confirm(`Delete part ${p.part_number}?`)) return;
+                          await api(`/parts/${p.id}`, { method: "DELETE", token });
+                          await refresh();
+                        } catch (e) {
+                          onError(e.message);
+                        }
+                      }}
+                      style={{ border: "1px solid #f2c2c2", color: "#7a0000", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "#fff5f5" }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
 
-          {parts.length === 0 ? <div style={{ opacity: 0.7 }}>No parts yet.</div> : null}
-        </div>
-      </Card>
+            {parts.length === 0 ? <div style={{ opacity: 0.7 }}>No parts yet.</div> : null}
+          </div>
+        </Card>
+      </div>
+
+      {editUser ? (
+        <EditUserModal
+          token={token}
+          user={editUser}
+          onClose={() => setEditUser(null)}
+          onSaved={async () => {
+            setEditUser(null);
+            await refresh();
+          }}
+          onError={onError}
+        />
+      ) : null}
+
+      {editPart ? (
+        <EditPartModal
+          token={token}
+          part={editPart}
+          onClose={() => setEditPart(null)}
+          onSaved={async () => {
+            setEditPart(null);
+            await refresh();
+          }}
+          onError={onError}
+        />
+      ) : null}
     </div>
-
-    {editUser ? (
-      <EditUserModal
-        token={token}
-        user={editUser}
-        onClose={() => setEditUser(null)}
-        onSaved={async () => {
-          setEditUser(null);
-          await refresh();
-        }}
-        onError={onError}
-      />
-    ) : null}
-
-    {editPart ? (
-      <EditPartModal
-        token={token}
-        part={editPart}
-        onClose={() => setEditPart(null)}
-        onSaved={async () => {
-          setEditPart(null);
-          await refresh();
-        }}
-        onError={onError}
-      />
-    ) : null}
-  </div>
-);
-
-
-} // ✅ AdminPanel ENDS HERE
-
+  );
+} // ✅ AdminPanel ends
 
 // ---------------- Inventory ----------------
 function InventoryPage({ token, user, onError }) {
@@ -729,10 +780,7 @@ function InventoryPage({ token, user, onError }) {
             <div style={{ fontWeight: 900 }}>{typeof p.qty_on_hand === "number" ? p.qty_on_hand : 0}</div>
 
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <button
-                onClick={() => openTxns(p)}
-                style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
-              >
+              <button onClick={() => openTxns(p)} style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}>
                 History
               </button>
 
@@ -748,7 +796,11 @@ function InventoryPage({ token, user, onError }) {
 
                   <button
                     onClick={async () => {
-                      try { await receive(p.id); } catch (e) { onError(e.message); }
+                      try {
+                        await receive(p.id);
+                      } catch (e) {
+                        onError(e.message);
+                      }
                     }}
                     style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
                   >
@@ -757,7 +809,11 @@ function InventoryPage({ token, user, onError }) {
 
                   <button
                     onClick={async () => {
-                      try { await issue(p.id); } catch (e) { onError(e.message); }
+                      try {
+                        await issue(p.id);
+                      } catch (e) {
+                        onError(e.message);
+                      }
                     }}
                     style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
                   >
@@ -773,16 +829,26 @@ function InventoryPage({ token, user, onError }) {
       </div>
 
       {txnsPart ? (
-        <Modal title={`Inventory History: ${txnsPart.part_number}`} onClose={() => { setTxnsPart(null); setTxns([]); }}>
+        <Modal
+          title={`Inventory History: ${txnsPart.part_number}`}
+          onClose={() => {
+            setTxnsPart(null);
+            setTxns([]);
+          }}
+        >
           <div style={{ display: "grid", gap: 10 }}>
             {txns.length === 0 ? <div style={{ opacity: 0.7 }}>No transactions yet.</div> : null}
 
             {txns.map((t) => (
               <div key={t.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14 }}>
                 <div style={{ display: "flex", gap: 10, fontSize: 13, opacity: 0.85 }}>
-                  <div><b>{t.txn_type}</b></div>
+                  <div>
+                    <b>{t.txn_type}</b>
+                  </div>
                   <div>{fmtDT(t.created_at)}</div>
-                  <div style={{ marginLeft: "auto" }}><b>Δ</b> {t.qty_delta}</div>
+                  <div style={{ marginLeft: "auto" }}>
+                    <b>Δ</b> {t.qty_delta}
+                  </div>
                 </div>
                 {t.note ? <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{t.note}</div> : null}
                 {t.ref_wo_id ? <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>WO ID: {t.ref_wo_id}</div> : null}
@@ -794,7 +860,6 @@ function InventoryPage({ token, user, onError }) {
     </div>
   );
 }
-
 
 // ---------------- Work Orders ----------------
 function WorkOrders({ token, user, onError }) {
@@ -881,14 +946,7 @@ function WorkOrders({ token, user, onError }) {
       </div>
 
       {selected ? (
-        <WorkOrderDetail
-          token={token}
-          user={user}
-          woId={selected.id}
-          onClose={() => setSelected(null)}
-          onError={onError}
-          onRefresh={async () => refresh()}
-        />
+        <WorkOrderDetail token={token} user={user} woId={selected.id} onClose={() => setSelected(null)} onError={onError} onRefresh={async () => refresh()} />
       ) : null}
     </div>
   );
@@ -916,7 +974,7 @@ function CreateWOButton({ token, onCreated, onError }) {
 
         const p = await api("/parts", { token });
         setParts(p || []);
-        setPartId((p?.[0]?.id) ?? null);
+        setPartId(p?.[0]?.id ?? null);
       } catch (e) {
         onError(e.message);
       }
@@ -1034,11 +1092,32 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
 
   const isAdminOrSupervisor = user?.role === "admin" || user?.role === "supervisor";
   const isAdmin = user?.role === "admin";
-  const isClosed = (wo.status || "").toLowerCase() === "closed";
-  const isComplete = (wo.status || "").toLowerCase() === "complete";
+
+  const statusNorm = normStatus(wo.status);
+  const isClosed = statusNorm === "closed";
+  const isComplete = statusNorm === "complete" || statusNorm === "completed";
+  const isKnownStatus = KNOWN_STATUSES.includes(statusNorm);
+
+  // IMPORTANT: Backend PATCH likely requires full body (your simple {status:"complete"} caused 400)
+  async function patchStatus(nextStatus) {
+    const body = {
+      station: wo.station,
+      part_id: wo.part_id,
+      is_stock: !!wo.is_stock,
+      customer_order: wo.is_stock ? "" : (wo.customer_order || ""),
+      status: nextStatus,
+    };
+    await api(`/work-orders/${woId}`, { method: "PATCH", token, body });
+  }
 
   return (
     <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14, background: "white" }}>
+      {!isKnownStatus ? (
+        <div style={{ marginBottom: 12, padding: 10, border: "1px solid #f2d08a", background: "#fff8e8", borderRadius: 14 }}>
+          ⚠ Unknown status from API: <b>{String(wo.status)}</b> (UI will still work)
+        </div>
+      ) : null}
+
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontWeight: 950, fontSize: 18 }}>{wo.wo_number}</div>
         <div style={{ opacity: 0.8 }}>{wo.station}</div>
@@ -1056,10 +1135,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
 
         {isAdmin ? (
           <>
-            <button
-              onClick={() => setEditOpen(true)}
-              style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
-            >
+            <button onClick={() => setEditOpen(true)} style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}>
               Edit
             </button>
             <button
@@ -1086,8 +1162,12 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
       </div>
 
       <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-        <div><b>Part #:</b> {wo.part_number}</div>
-        <div><b>Customer Order:</b> {wo.is_stock ? "Stock" : (wo.customer_order || "-")}</div>
+        <div>
+          <b>Part #:</b> {wo.part_number}
+        </div>
+        <div>
+          <b>Customer Order:</b> {wo.is_stock ? "Stock" : wo.customer_order || "-"}
+        </div>
       </div>
 
       <div style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 14, background: "#fafafa" }}>
@@ -1138,15 +1218,16 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               {isMeCheckedIn ? "Check Out" : "Check In"}
             </button>
 
+            {/* FIXED JSX: must be wrapped in { } */}
             {!isComplete ? (
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "complete" } });
+                    await patchStatus("complete");
                     await load();
                     await onRefresh();
                   } catch (e) {
-                    onError(e.message);
+                    onError(e?.message || String(e));
                   }
                 }}
                 style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 950 }}
@@ -1157,11 +1238,11 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "open" } });
+                    await patchStatus("open");
                     await load();
                     await onRefresh();
                   } catch (e) {
-                    onError(e.message);
+                    onError(e?.message || String(e));
                   }
                 }}
                 style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 950 }}
@@ -1174,11 +1255,11 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${woId}/close`, { method: "POST", token });
+                    await patchStatus("closed");
                     await load();
                     await onRefresh();
                   } catch (e) {
-                    onError(e.message);
+                    onError(e?.message || String(e));
                   }
                 }}
                 style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #0b5", background: "#0b5", color: "white", cursor: "pointer", fontWeight: 950 }}
@@ -1193,11 +1274,11 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           <button
             onClick={async () => {
               try {
-                await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: "open" } });
+                await patchStatus("open");
                 await load();
                 await onRefresh();
               } catch (e) {
-                onError(e.message);
+                onError(e?.message || String(e));
               }
             }}
             style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 950 }}
@@ -1232,9 +1313,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
                 <div style={{ opacity: 0.8 }}>{h.role}</div>
               </div>
               <div style={{ fontSize: 13, opacity: 0.85 }}>
-               <b>IN:</b> {fmtDT(h.started_at) || "-"}
-               &nbsp;&nbsp; <b>OUT:</b> {fmtDT(h.ended_at) || "—"}
-
+                <b>IN:</b> {fmtDT(h.started_at) || "-"} &nbsp;&nbsp; <b>OUT:</b> {fmtDT(h.ended_at) || "—"}
               </div>
             </div>
           ))}
@@ -1272,7 +1351,9 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           {notes.map((n) => (
             <div key={n.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 14 }}>
               <div style={{ display: "flex", gap: 10, opacity: 0.85, fontSize: 13 }}>
-                <div><b>{n.author_name}</b></div>
+                <div>
+                  <b>{n.author_name}</b>
+                </div>
                 <div>{fmtDT(n.created_at)}</div>
                 <div style={{ marginLeft: "auto" }}>{n.station || ""}</div>
               </div>
@@ -1331,7 +1412,9 @@ function EditWorkOrderModal({ token, wo, onClose, onSaved, onError }) {
           <div style={{ fontWeight: 800 }}>Station</div>
           <select value={station} onChange={(e) => setStation(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
             {stations.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
         </label>
@@ -1340,7 +1423,9 @@ function EditWorkOrderModal({ token, wo, onClose, onSaved, onError }) {
           <div style={{ fontWeight: 800 }}>Part Number</div>
           <select value={partId ?? ""} onChange={(e) => setPartId(Number(e.target.value))} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
             {parts.map((p) => (
-              <option key={p.id} value={p.id}>{p.part_number}</option>
+              <option key={p.id} value={p.id}>
+                {p.part_number}
+              </option>
             ))}
           </select>
         </label>
@@ -1382,6 +1467,118 @@ function EditWorkOrderModal({ token, wo, onClose, onSaved, onError }) {
                     status,
                   },
                 });
+                await onSaved();
+              } catch (e) {
+                onError(e.message);
+              }
+            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
+          >
+            Save
+          </button>
+
+          <button onClick={onClose} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Minimal modal implementations to avoid "not defined" crashes
+ * (If you already have better versions in another file, remove these and keep your originals.)
+ */
+function EditUserModal({ token, user, onClose, onSaved, onError }) {
+  const [role, setRole] = React.useState(user.role);
+  const [isActive, setIsActive] = React.useState(!!user.is_active);
+
+  return (
+    <Modal title={`Edit User: ${user.name}`} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Role</div>
+          <select value={role} onChange={(e) => setRole(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }}>
+            <option value="assembler">assembler</option>
+            <option value="supervisor">supervisor</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+
+        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+          <div style={{ fontWeight: 800 }}>Active</div>
+        </label>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={async () => {
+              try {
+                await api(`/users/${user.id}`, { method: "PATCH", token, body: { role, is_active: isActive } });
+                await onSaved();
+              } catch (e) {
+                onError(e.message);
+              }
+            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer", fontWeight: 900 }}
+          >
+            Save
+          </button>
+          <button onClick={onClose} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 900 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function EditPartModal({ token, part, onClose, onSaved, onError }) {
+  const [partNumber, setPartNumber] = React.useState(part.part_number || "");
+  const [file, setFile] = React.useState(null);
+
+  async function upload(partId) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_BASE}/parts/${partId}/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const j = text ? JSON.parse(text) : null;
+        if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+      } catch {
+        if (text) msg = text;
+      }
+      throw new Error(msg);
+    }
+  }
+
+  return (
+    <Modal title={`Edit Part: ${part.part_number}`} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Part Number</div>
+          <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 800 }}>Replace Instruction File (optional)</div>
+          <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        </label>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={async () => {
+              try {
+                await api(`/parts/${part.id}`, { method: "PATCH", token, body: { part_number: partNumber.trim() } });
+                await upload(part.id);
                 await onSaved();
               } catch (e) {
                 onError(e.message);
