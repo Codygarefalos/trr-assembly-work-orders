@@ -7,7 +7,7 @@ from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()  # ✅ app must exist before add_middleware()
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
