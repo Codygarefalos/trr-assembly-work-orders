@@ -1216,7 +1216,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
             <button
               onClick={async () => {
                 try {
-                  await api(`/work-orders/${wo_Id}/workers/${isMeCheckedIn ? "stop" : "start"}`, { method: "POST", token });
+                  await api(`/work-orders/${woId}/workers/${isMeCheckedIn ? "stop" : "start"}`, { method: "POST", token });
                   await load();
                   await onRefresh();
                 } catch (e) {
@@ -1232,7 +1232,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${wo_Id}/mark-complete`, { method: "POST", token });
+                    await api(`/work-orders/${woId}/mark-complete`, { method: "POST", token });
                     await load();
                     await onRefresh();
                   } catch (e) {
@@ -1247,7 +1247,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${wo_Id}/undo-complete`, { method: "POST", token });
+                    await api(`/work-orders/${woId}/undo-complete`, { method: "POST", token });
                     await load();
                     await onRefresh();
                   } catch (e) {
@@ -1264,7 +1264,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
               <button
                 onClick={async () => {
                   try {
-                    await api(`/work-orders/${wo_Id}/close`, { method: "POST", token });
+                    await api(`/work-orders/${woId}/close`, { method: "POST", token });
                     await load();
                     await onRefresh();
                   } catch (e) {
@@ -1283,7 +1283,7 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           <button
             onClick={async () => {
               try {
-                await api(`/work-orders/${wo_Id}/reopen`, { method: "POST", token });
+                await api(`/work-orders/${woId}/reopen`, { method: "POST", token });
                 await load();
                 await onRefresh();
               } catch (e) {
