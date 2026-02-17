@@ -148,8 +148,8 @@ class Part(Base):
     description = Column(String(255), nullable=True)
 
     # file
-    file_path = Column(String(500), nullable=True)
-    filename = Column(String(255), nullable=True)
+   filename = Column(String, nullable=True)
+   file_path = Column(String, nullable=True)
     uploaded_at = Column(DateTime, nullable=True)
 
     # inventory
@@ -504,58 +504,56 @@ def list_parts(_: User = Depends(get_current_user), s: Session = Depends(db)):
     return out
 
 
-@app.post("/parts", response_model=OkResponse)
+import os
+from fastapi.responses import FileResponse
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@app.post("/parts")
 def create_part(
     part_number: str = Form(...),
-    description: str = Form(""),
     file: UploadFile = File(...),
-    _: User = Depends(require_role("admin", "supervisor")),
-    s: Session = Depends(db),
+    db: Session = Depends(get_db),
 ):
-    pn = part_number.strip()
-    if not pn:
-        raise HTTPException(status_code=400, detail="part_number is required")
+    if not part_number:
+        raise HTTPException(status_code=400, detail="part_number required")
 
-    existing = s.query(Part).filter(Part.part_number == pn).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Part already exists")
+    try:
+        # --- Save file safely ---
+        filename = file.filename or f"{part_number}.pdf"
+        filepath = os.path.join(UPLOAD_DIR, filename)
 
-    # Save file
-    safe_name = file.filename or "upload.bin"
-    ext = os.path.splitext(safe_name)[1]
-    disk_name = f"{uuid.uuid4().hex}{ext}"
-    disk_path = os.path.join(UPLOAD_DIR, disk_name)
+        with open(filepath, "wb") as f:
+            f.write(file.file.read())
 
-    content = file.file.read()
-    with open(disk_path, "wb") as f:
-        f.write(content)
+        # --- Create DB record ---
+        part = Part(
+            part_number=part_number,
+            filename=filename,
+            file_path=filepath,
+        )
 
-    p = Part(
-        part_number=pn,
-        description=description.strip() or None,
-        file_path=disk_path,
-        filename=safe_name,
-        uploaded_at=datetime.utcnow(),
-        qty_on_hand=0,
-        inventory_updated_at=datetime.utcnow(),
-    )
-    s.add(p)
-    s.commit()
-    return OkResponse()
+        db.add(part)
+        db.commit()
+        db.refresh(part)
+
+        return {"id": part.id, "part_number": part.part_number}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create part: {str(e)}")
 
 
-@app.get("/parts/{id}/file")
-def get_part_file(id: int, db: Session = Depends(get_db)):
+
+@app.get("/parts/{id}/download")
+def download_part_file(id: int, db: Session = Depends(get_db)):
     part = db.query(Part).filter(Part.id == id).first()
     if not part or not part.file_path:
         raise HTTPException(status_code=404, detail="File not found")
 
-    try:
-        return FileResponse(
-            part.file_path,
-            filename=part.filename or "instructions.pdf",
-            media_type="application/octet-stream",
-        )
+    return FileResponse(part.file_path, filename=part.filename)
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
