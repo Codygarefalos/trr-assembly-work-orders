@@ -1099,16 +1099,45 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
   const isKnownStatus = KNOWN_STATUSES.includes(statusNorm);
 
   // IMPORTANT: Backend PATCH likely requires full body (your simple {status:"complete"} caused 400)
-  async function patchStatus(nextStatus) {
-    const body = {
-      station: wo.station,
-      part_id: wo.part_id,
-      is_stock: !!wo.is_stock,
-      customer_order: wo.is_stock ? "" : (wo.customer_order || ""),
-      status: nextStatus,
-    };
-    await api(`/work-orders/${woId}`, { method: "PATCH", token, body });
+async function patchStatus(nextStatus) {
+if (!wo) throw new Error("Work order not loaded yet");
+if (!woId) throw new Error("Missing woId");
+if (!token) throw new Error("Missing token");
+
+  // Always send the full payload that PATCH expects
+  const baseBody = {
+    station: wo.station,
+    part_id: wo.part_id,
+    is_stock: !!wo.is_stock,
+    // IMPORTANT: stock should be null, not ""
+    customer_order: wo.is_stock ? null : (wo.customer_order ?? ""),
+  };
+
+  // Some backends use "complete", others use "completed"
+  const tryStatuses =
+    nextStatus === "complete" ? ["complete", "completed"] :
+    nextStatus === "open" ? ["open"] :
+    nextStatus === "closed" ? ["closed"] :
+    [nextStatus];
+
+  let lastErr = null;
+
+  for (const s of tryStatuses) {
+    try {
+      await api(`/work-orders/${woId}`, {
+        method: "PATCH",
+        token,
+        body: { ...baseBody, status: s },
+      });
+      return; // success
+    } catch (e) {
+      lastErr = e;
+    }
   }
+
+  throw lastErr || new Error("Failed to update work order status");
+}
+
 
   return (
     <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14, background: "white" }}>
@@ -1175,19 +1204,19 @@ function WorkOrderDetail({ token, user, woId, onClose, onError, onRefresh }) {
           <div style={{ fontWeight: 950 }}>Work Instructions</div>
           <div style={{ marginLeft: "auto" }}>
             {wo.instruction_url ? (
-              <button
-                onClick={async () => {
-                  try {
-                    await openFileWithAuth(wo.instruction_url, token);
-                  } catch (e) {
-                    onError(e.message);
-                  }
-                }}
-                style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
-              >
-                Open Instructions
-              </button>
-            ) : (
+ <button
+  onClick={async () => {
+    try {
+      await openInstructions();
+    } catch (e) {
+      onError(e?.message || String(e));
+    }
+  }}
+  style={{ border: "1px solid #ddd", borderRadius: 12, padding: "8px 10px", cursor: "pointer", background: "white" }}
+>
+  Open Instructions
+</button>
+
               <span style={{ opacity: 0.7, fontSize: 13 }}>No instruction file attached for this part yet.</span>
             )}
           </div>
