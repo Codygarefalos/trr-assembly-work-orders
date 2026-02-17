@@ -10,35 +10,48 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
 
 # --- CORS (Render frontend + local dev) ---
+ALLOWED_ORIGINS = {
+    "https://trr-assembly-work-orders.onrender.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://trr-assembly-work-orders.onrender.com",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"^https:\/\/trr-assembly-work-orders\.onrender\.com$",
+    allow_origins=list(ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
 
-# --- Ensure CORS headers are present even on unhandled 500 errors ---
+# --- Force-preflight support (OPTIONS) ---
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response, JSONResponse
 
+@app.options("/{path:path}")
+async def preflight(path: str, request: Request):
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,PUT,DELETE,OPTIONS"
+        headers["Access-Control-Allow-Headers"] = request.headers.get(
+            "access-control-request-headers",
+            "Authorization,Content-Type",
+        )
+    return Response(status_code=200, headers=headers)
+
+# --- Ensure CORS headers are present even on unhandled 500 errors ---
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    # IMPORTANT: Keep response readable by the browser (avoids "CORS blocked" hiding the real issue)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal Server Error"},
-        headers={
-            "Access-Control-Allow-Origin": "https://trr-assembly-work-orders.onrender.com",
-            "Access-Control-Allow-Credentials": "true",
-        },
-    )
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"}, headers=headers)
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
