@@ -6,7 +6,10 @@ import ReactDOM from "react-dom/client";
  * - On Render frontend, set VITE_API_URL to: https://trr-assembly-api.onrender.com
  * - Locally: http://127.0.0.1:8000
  */
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  "https://trr-assembly-api.onrender.com";
+
 
 async function api(path, { token, method = "GET", body, isForm = false } = {}) {
   const headers = {};
