@@ -1,24 +1,16 @@
 import React from "react";
-import ReactDOM from "react-dom/client";
+import { createRoot } from "react-dom/client";
 
-// -----------------------------
-// CONFIG
-// -----------------------------
-const API_BASE =
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) ||
-  "https://trr-assembly-api.onrender.com";
+/**
+ * Configure API base:
+ * - Render: set VITE_API_URL to https://trr-assembly-api.onrender.com
+ * - Local: http://127.0.0.1:8000
+ */
+const API_BASE = (import.meta.env.VITE_API_URL || "https://trr-assembly-api.onrender.com").replace(/\/+$/, "");
 
-// -----------------------------
-// Small helpers
-// -----------------------------
-function cx(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
-
-async function api(path, { method = "GET", token, body, isForm = false } = {}) {
-  const url = `${API_BASE}${path}`;
+async function api(path, { token, method = "GET", body, isForm = false } = {}) {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const headers = {};
-
   if (!isForm) headers["Content-Type"] = "application/json";
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -28,688 +20,225 @@ async function api(path, { method = "GET", token, body, isForm = false } = {}) {
     body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
   });
 
-  // try read json
+  const text = await res.text();
   let data = null;
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    data = await res.json().catch(() => null);
-  } else {
-    const txt = await res.text().catch(() => "");
-    data = txt ? { detail: txt } : null;
-  }
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
 
   if (!res.ok) {
-    const msg =
-      (data && (data.detail || data.message)) ||
-      `${res.status} ${res.statusText}` ||
-      "Request failed";
+    const msg = (data && data.detail) ? data.detail : `HTTP ${res.status}`;
     throw new Error(msg);
   }
   return data;
 }
 
-function fmtDT(d) {
-  try {
-    const x = new Date(d);
-    return x.toLocaleString();
-  } catch {
-    return String(d || "");
-  }
-}
+function cls(...xs) { return xs.filter(Boolean).join(" "); }
 
-// -----------------------------
-// UI atoms
-// -----------------------------
 const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #f7f8fc, #ffffff)",
-    color: "#111",
-    fontFamily:
-      'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"',
-  },
-  shell: { maxWidth: 1180, margin: "0 auto", padding: 18 },
-  topbar: {
-    display: "flex",
-    alignItems: "center",
-    gap: 14,
-    padding: 14,
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.9)",
-    boxShadow: "0 12px 40px rgba(0,0,0,0.08)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    position: "sticky",
-    top: 12,
-    zIndex: 10,
-    backdropFilter: "blur(8px)",
-  },
-  brand: { display: "flex", flexDirection: "column", lineHeight: 1.1 },
-  title: { fontWeight: 950, fontSize: 18 },
-  subtitle: { opacity: 0.7, fontSize: 12 },
-  tabs: { display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" },
-  tabBtn: (active) => ({
-    border: "1px solid rgba(0,0,0,0.12)",
+  page: { fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", background: "#f6f7fb", minHeight: "100vh" },
+  shell: { maxWidth: 1200, margin: "0 auto", padding: 18 },
+  header: { background: "white", borderRadius: 18, padding: 16, boxShadow: "0 8px 30px rgba(0,0,0,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  brand: { display: "flex", flexDirection: "column", gap: 2 },
+  h1: { margin: 0, fontSize: 20, fontWeight: 800, letterSpacing: 0.2 },
+  sub: { margin: 0, color: "#666", fontSize: 12 },
+  tabs: { display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" },
+  tab: (active) => ({
+    border: "1px solid #e6e7ef",
     background: active ? "#111" : "white",
     color: active ? "white" : "#111",
-    borderRadius: 999,
     padding: "8px 12px",
+    borderRadius: 999,
     cursor: "pointer",
-    fontWeight: 900,
-    boxShadow: active ? "0 10px 20px rgba(0,0,0,0.18)" : "none",
-    transition: "transform .08s ease",
+    fontWeight: 700,
+    fontSize: 13,
   }),
-  card: {
-    background: "white",
-    borderRadius: 18,
-    border: "1px solid rgba(0,0,0,0.08)",
-    boxShadow: "0 14px 40px rgba(0,0,0,0.07)",
-    padding: 16,
+  card: { background: "white", borderRadius: 18, padding: 16, marginTop: 14, boxShadow: "0 8px 30px rgba(0,0,0,0.06)" },
+  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  input: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e6e7ef", outline: "none", fontSize: 14, width: 280, maxWidth: "100%" },
+  select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #e6e7ef", outline: "none", fontSize: 14, minWidth: 280, maxWidth: "100%" },
+  btn: (variant = "default") => {
+    const base = { padding: "10px 12px", borderRadius: 12, border: "1px solid #e6e7ef", cursor: "pointer", fontWeight: 800, fontSize: 13 };
+    if (variant === "dark") return { ...base, background: "#111", color: "white", borderColor: "#111" };
+    if (variant === "green") return { ...base, background: "#0b7a3b", color: "white", borderColor: "#0b7a3b" };
+    if (variant === "danger") return { ...base, background: "#c72b2b", color: "white", borderColor: "#c72b2b" };
+    return { ...base, background: "white", color: "#111" };
   },
-  h2: { margin: 0, fontSize: 18, fontWeight: 950 },
-  row: { display: "flex", gap: 12, flexWrap: "wrap" },
-  input: {
-    width: "100%",
-    border: "1px solid rgba(0,0,0,0.14)",
-    borderRadius: 12,
-    padding: "10px 12px",
-    outline: "none",
-    fontSize: 14,
-  },
-  label: { fontSize: 12, opacity: 0.75, fontWeight: 800, marginBottom: 6 },
-  btn: (tone = "dark") => {
-    const map = {
-      dark: { bg: "#111", fg: "white", bd: "#111" },
-      light: { bg: "white", fg: "#111", bd: "rgba(0,0,0,0.14)" },
-      green: { bg: "#0b7a3b", fg: "white", bd: "#0b7a3b" },
-      red: { bg: "#b42318", fg: "white", bd: "#b42318" },
-    };
-    const t = map[tone] || map.dark;
-    return {
-      border: `1px solid ${t.bd}`,
-      background: t.bg,
-      color: t.fg,
-      borderRadius: 12,
-      padding: "10px 12px",
-      cursor: "pointer",
-      fontWeight: 950,
-    };
-  },
-  pill: (tone = "gray") => {
-    const map = {
-      gray: { bg: "#f2f4f7", fg: "#111" },
-      green: { bg: "#eaf7ef", fg: "#0b7a3b" },
-      blue: { bg: "#eef4ff", fg: "#1d4ed8" },
-      red: { bg: "#ffecec", fg: "#b42318" },
-    };
-    const t = map[tone] || map.gray;
-    return {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 10px",
-      borderRadius: 999,
-      background: t.bg,
-      color: t.fg,
-      fontSize: 12,
-      fontWeight: 900,
-      border: "1px solid rgba(0,0,0,0.06)",
-    };
-  },
-  banner: (tone) => {
-    const map = {
-      error: { bg: "#fff1f2", bd: "#fecdd3", fg: "#9f1239" },
-      ok: { bg: "#ecfdf5", bd: "#a7f3d0", fg: "#065f46" },
-      info: { bg: "#eff6ff", bd: "#bfdbfe", fg: "#1e40af" },
-    };
-    const t = map[tone] || map.info;
-    return {
-      background: t.bg,
-      border: `1px solid ${t.bd}`,
-      color: t.fg,
-      borderRadius: 16,
-      padding: "10px 12px",
-      fontWeight: 800,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
-      marginBottom: 12,
-    };
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "separate",
-    borderSpacing: 0,
-    overflow: "hidden",
-    borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.08)",
-  },
-  th: {
-    textAlign: "left",
-    fontSize: 12,
-    opacity: 0.75,
-    padding: "10px 12px",
-    background: "#fafafa",
-    borderBottom: "1px solid rgba(0,0,0,0.06)",
-  },
-  td: { padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.06)", verticalAlign: "top" },
-  modalBack: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.32)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 16,
-    zIndex: 50,
-  },
-  modal: {
-    width: "min(980px, 100%)",
-    maxHeight: "85vh",
-    overflow: "auto",
-    background: "white",
-    borderRadius: 18,
-    border: "1px solid rgba(0,0,0,0.08)",
-    boxShadow: "0 20px 70px rgba(0,0,0,0.28)",
-    padding: 16,
-  },
+  banner: { marginTop: 14, borderRadius: 16, padding: 12, background: "#ffecec", border: "1px solid #ffd0d0", color: "#7a1b1b", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  table: { width: "100%", borderCollapse: "separate", borderSpacing: "0 10px" },
+  th: { textAlign: "left", fontSize: 12, color: "#666", padding: "0 10px" },
+  trCard: { background: "#fbfbfe", border: "1px solid #ececf6" },
+  td: { padding: "12px 10px", verticalAlign: "top" },
+  pill: (bg, fg) => ({ display: "inline-block", padding: "4px 10px", borderRadius: 999, fontSize: 12, fontWeight: 800, background: bg, color: fg }),
 };
 
-// -----------------------------
-// Main App
-// -----------------------------
-function App() {
-  const [token, setToken] = React.useState(localStorage.getItem("trr_token") || "");
-  const [user, setUser] = React.useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("trr_user") || "null");
-    } catch {
-      return null;
-    }
-  });
-
-  const [tab, setTab] = React.useState("work_orders"); // work_orders | create_wo | inventory | parts | admin
-  const [banner, setBanner] = React.useState(null);
-
-  function showError(msg) {
-    setBanner({ tone: "error", msg: msg || "Something went wrong" });
-  }
-  function showOk(msg) {
-    setBanner({ tone: "ok", msg: msg || "Done" });
-  }
-
-  function logout() {
-    setToken("");
-    setUser(null);
-    localStorage.removeItem("trr_token");
-    localStorage.removeItem("trr_user");
-    setTab("work_orders");
-  }
-
-  return (
-    <div style={styles.page}>
-      <div style={styles.shell}>
-        <div style={styles.topbar}>
-          <div style={styles.brand}>
-            <div style={styles.title}>TRR Assembly Work Orders</div>
-            <div style={styles.subtitle}>
-              {user ? (
-                <>
-                  Logged in as <b>{user.name}</b> ({user.role}) • API: {API_BASE}
-                </>
-              ) : (
-                <>API: {API_BASE}</>
-              )}
-            </div>
-          </div>
-
-          {user ? (
-            <div style={styles.tabs}>
-              <button style={styles.tabBtn(tab === "work_orders")} onClick={() => setTab("work_orders")}>Work Orders</button>
-              <button style={styles.tabBtn(tab === "create_wo")} onClick={() => setTab("create_wo")}>Create WO</button>
-              <button style={styles.tabBtn(tab === "inventory")} onClick={() => setTab("inventory")}>Inventory</button>
-              <button style={styles.tabBtn(tab === "parts")} onClick={() => setTab("parts")}>Parts</button>
-              <button style={styles.tabBtn(tab === "admin")} onClick={() => setTab("admin")}>Admin</button>
-              <button style={styles.tabBtn(false)} onClick={logout}>Logout</button>
-            </div>
-          ) : null}
-        </div>
-
-        {banner ? (
-          <div style={styles.banner(banner.tone)}>
-            <div>{banner.msg}</div>
-            <button style={styles.btn("light")} onClick={() => setBanner(null)}>✕</button>
-          </div>
-        ) : null}
-
-        {!user ? (
-          <Login
-            onLogin={(t, u) => {
-              setToken(t);
-              setUser(u);
-              localStorage.setItem("trr_token", t);
-              localStorage.setItem("trr_user", JSON.stringify(u));
-              showOk("Welcome back.");
-            }}
-            onError={showError}
-          />
-        ) : (
-          <>
-            {tab === "work_orders" ? <WorkOrders token={token} user={user} onError={showError} onOk={showOk} /> : null}
-            {tab === "create_wo" ? <CreateWorkOrder token={token} user={user} onError={showError} onOk={showOk} /> : null}
-            {tab === "inventory" ? <Inventory token={token} user={user} onError={showError} onOk={showOk} /> : null}
-            {tab === "parts" ? <Parts token={token} user={user} onError={showError} onOk={showOk} /> : null}
-            {tab === "admin" ? <Admin token={token} user={user} onError={showError} onOk={showOk} /> : null}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// -----------------------------
-// Login
-// -----------------------------
-function Login({ onLogin, onError }) {
+function Login({ onLogin, error }) {
   const [name, setName] = React.useState("");
   const [pin, setPin] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
+  async function submit() {
+    setBusy(true);
+    try {
+      const r = await api("/auth/login", { method: "POST", body: { name, pin } });
+      onLogin(r);
+    } catch (e) {
+      onLogin(null, e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div style={{ ...styles.card, marginTop: 16, maxWidth: 560, marginInline: "auto" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <h2 style={styles.h2}>Login</h2>
-        <span style={styles.pill("blue")}>TRR</span>
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <div style={styles.label}>Name</div>
-        <input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Cody" />
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <div style={styles.label}>PIN</div>
-        <input
-          style={styles.input}
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          placeholder="1234"
-          type="password"
-        />
-      </div>
-
-      <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-        <button
-          style={styles.btn("dark")}
-          disabled={busy}
-          onClick={async () => {
-            try {
-              setBusy(true);
-              const res = await api("/auth/login", { method: "POST", body: { name, pin } });
-              onLogin(res.token, { name: res.name, role: res.role });
-            } catch (e) {
-              onError(e.message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
+    <div style={styles.card}>
+      <h2 style={{ marginTop: 0 }}>Login</h2>
+      <div style={styles.row}>
+        <input style={styles.input} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <input style={styles.input} placeholder="PIN" value={pin} onChange={(e) => setPin(e.target.value)} type="password" />
+        <button style={styles.btn("dark")} onClick={submit} disabled={busy || !name || !pin}>
           {busy ? "Logging in..." : "Login"}
         </button>
-        <div style={{ marginLeft: "auto", opacity: 0.7, fontSize: 12, alignSelf: "center" }}>
-          Tip: if you get “connection refused”, your API_BASE is wrong.
-        </div>
       </div>
+      {error ? <div style={{ marginTop: 10, color: "#b00020", fontWeight: 700 }}>{error}</div> : null}
     </div>
   );
 }
 
-// -----------------------------
-// Work Orders List + Modal
-// -----------------------------
-function WorkOrders({ token, user, onError, onOk }) {
+function WorkOrdersPage({ token, user, onError }) {
   const [wos, setWos] = React.useState([]);
   const [q, setQ] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [openWO, setOpenWO] = React.useState(null);
 
-  const canManage = user.role === "admin" || user.role === "supervisor";
+  const canManage = user?.role === "admin" || user?.role === "supervisor";
 
   async function refresh() {
     try {
-      setBusy(true);
-      const rows = await api("/work-orders", { token });
-      setWos(rows || []);
+      const data = await api("/work-orders", { token });
+      setWos(data || []);
     } catch (e) {
       onError(e.message);
-    } finally {
-      setBusy(false);
+      setWos([]);
     }
   }
 
   React.useEffect(() => { refresh(); }, []);
 
   const filtered = wos.filter((w) => {
-    if (!q.trim()) return true;
     const s = `${w.wo_number} ${w.station} ${w.part_number} ${w.customer_order || ""} ${w.status}`.toLowerCase();
-    return s.includes(q.toLowerCase());
+    return !q.trim() || s.includes(q.toLowerCase());
   });
 
-  async function setStatus(woId, nextStatus) {
+  async function complete(id) { try { await api(`/work-orders/${id}/complete`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+  async function close(id) { try { await api(`/work-orders/${id}/close`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+  async function reopen(id) { try { await api(`/work-orders/${id}/reopen`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+  async function checkIn(id) { try { await api(`/work-orders/${id}/workers/check-in`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+  async function checkOut(id) { try { await api(`/work-orders/${id}/workers/check-out`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+
+  async function delWO(id) {
+    if (!confirm("Delete this work order? This cannot be undone.")) return;
     try {
-      if (!canManage) return;
-      await api(`/work-orders/${woId}`, { method: "PATCH", token, body: { status: nextStatus } });
-      onOk(`Work order set to ${nextStatus}`);
-      await refresh();
+      await api(`/work-orders/${id}`, { token, method: "DELETE" });
+      refresh();
     } catch (e) {
       onError(e.message);
     }
   }
 
-  return (
-    <div style={{ marginTop: 16 }}>
-      <div style={styles.card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <h2 style={styles.h2}>Work Orders</h2>
-          <span style={styles.pill("gray")}>{busy ? "Loading..." : `${filtered.length} shown`}</span>
+  function openInstructions(w) {
+    if (!w.instruction_url) return;
+    // open file in new tab
+    window.open(`${API_BASE}${w.instruction_url}`, "_blank", "noopener,noreferrer");
+  }
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              style={{ ...styles.input, width: 380, maxWidth: "100%" }}
-              placeholder="Search WO / station / part / status..."
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <button style={styles.btn("light")} onClick={refresh}>Refresh</button>
-          </div>
+  function printWO(w) {
+    // print uses token query param
+    window.open(`${API_BASE}/work-orders/${w.id}/print?token=${encodeURIComponent(token)}`, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div style={styles.card}>
+      <div style={{ ...styles.row, justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h2 style={{ margin: 0 }}>Work Orders</h2>
+          <span style={styles.pill("#eef2ff", "#3b49df")}>{filtered.length} shown</span>
         </div>
 
-        <div style={{ marginTop: 12 }}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>WO</th>
-                <th style={styles.th}>Station</th>
-                <th style={styles.th}>Part</th>
-                <th style={styles.th}>Customer / Stock</th>
-                <th style={styles.th}>Status</th>
-                <th style={styles.th}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((w) => {
-                const tone =
-                  w.status === "complete" ? "green" :
-                  w.status === "closed" ? "gray" :
-                  w.status === "in_progress" ? "blue" : "gray";
-
-                return (
-                  <tr key={w.id}>
-                    <td style={styles.td}><b>{w.wo_number}</b><div style={{ opacity: 0.65, fontSize: 12 }}>{fmtDT(w.created_at)}</div></td>
-                    <td style={styles.td}>{w.station}</td>
-                    <td style={styles.td}>
-                      <div style={{ fontWeight: 900 }}>{w.part_number}</div>
-                      {w.part_id ? <div style={{ opacity: 0.7, fontSize: 12 }}>Part ID: {w.part_id}</div> : null}
-                    </td>
-                    <td style={styles.td}>
-                      {w.is_stock ? <span style={styles.pill("blue")}>Stock Job</span> : (w.customer_order || <span style={{ opacity: 0.6 }}>—</span>)}
-                    </td>
-                    <td style={styles.td}>
-                      <span style={styles.pill(tone)}>{w.status}</span>
-                    </td>
-                    <td style={styles.td}>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button style={styles.btn("light")} onClick={() => setOpenWO(w)}>Open</button>
-
-                        {w.part_id ? (
-                          <button
-                            style={styles.btn("light")}
-                            onClick={() => {
-                              const url = `${API_BASE}/parts/${w.part_id}/file`;
-                              window.open(url, "_blank", "noopener,noreferrer");
-                            }}
-                          >
-                            Instructions
-                          </button>
-                        ) : null}
-
-                        {canManage ? (
-                          <>
-                            <button style={styles.btn("green")} onClick={() => setStatus(w.id, "complete")}>Complete</button>
-                            <button style={styles.btn("dark")} onClick={() => setStatus(w.id, "closed")}>Close</button>
-                            <button style={styles.btn("light")} onClick={() => setStatus(w.id, "open")}>Reopen</button>
-                          </>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtered.length === 0 ? (
-                <tr>
-                  <td style={styles.td} colSpan={6}>
-                    <div style={{ opacity: 0.75 }}>No work orders found.</div>
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+        <div style={styles.row}>
+          <input style={{ ...styles.input, width: 360 }} placeholder="Search WO / station / part / status..." value={q} onChange={(e) => setQ(e.target.value)} />
+          <button style={styles.btn()} onClick={refresh}>Refresh</button>
         </div>
       </div>
 
-      {openWO ? (
-        <WorkOrderModal
-          token={token}
-          user={user}
-          wo={openWO}
-          onClose={() => setOpenWO(null)}
-          onError={onError}
-          onOk={onOk}
-          onRefresh={refresh}
-        />
-      ) : null}
-    </div>
-  );
-}
+      <div style={{ marginTop: 10 }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>WO</th>
+              <th style={styles.th}>Station</th>
+              <th style={styles.th}>Part</th>
+              <th style={styles.th}>Customer / Stock</th>
+              <th style={styles.th}>Status</th>
+              <th style={styles.th}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((w) => (
+              <tr key={w.id} style={styles.trCard}>
+                <td style={styles.td}>
+                  <div style={{ fontWeight: 900 }}>{w.wo_number}</div>
+                  <div style={{ fontSize: 12, color: "#666" }}>{new Date(w.created_at).toLocaleString()}</div>
+                </td>
+                <td style={styles.td}>
+                  <div style={{ fontWeight: 800 }}>{w.station}</div>
+                </td>
+                <td style={styles.td}>
+                  <div style={{ fontWeight: 900 }}>{w.part_number}</div>
+                  {w.part_id ? <div style={{ fontSize: 12, color: "#666" }}>Part ID: {w.part_id}</div> : null}
+                </td>
+                <td style={styles.td}>
+                  {w.is_stock ? (
+                    <span style={styles.pill("#e8fff1", "#0b7a3b")}>Stock Job</span>
+                  ) : (
+                    <div style={{ fontWeight: 800 }}>{w.customer_order || <span style={{ color: "#aaa" }}>—</span>}</div>
+                  )}
+                </td>
+                <td style={styles.td}>
+                  <span style={styles.pill("#f0f0f0", "#222")}>{w.status}</span>
+                </td>
+                <td style={styles.td}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {w.instruction_url ? (
+                      <button style={styles.btn()} onClick={() => openInstructions(w)}>Instructions</button>
+                    ) : (
+                      <button style={{ ...styles.btn(), opacity: 0.55 }} disabled>No Instructions</button>
+                    )}
+                    <button style={styles.btn()} onClick={() => printWO(w)}>Print</button>
 
-function WorkOrderModal({ token, user, wo, onClose, onError, onOk, onRefresh }) {
-  const [notes, setNotes] = React.useState([]);
-  const [workers, setWorkers] = React.useState([]);
-  const [text, setText] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
+                    <button style={styles.btn("dark")} onClick={() => checkIn(w.id)}>Check In</button>
+                    <button style={styles.btn()} onClick={() => checkOut(w.id)}>Check Out</button>
 
-  const canManage = user.role === "admin" || user.role === "supervisor";
-
-  async function load() {
-    try {
-      setBusy(true);
-      const n = await api(`/work-orders/${wo.id}/notes`, { token });
-      const w = await api(`/work-orders/${wo.id}/workers`, { token });
-      setNotes(n || []);
-      setWorkers(w || []);
-    } catch (e) {
-      onError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  React.useEffect(() => { load(); }, [wo.id]);
-
-  const isCheckedIn = workers.some((x) => x.user_id === user.id);
-
-  return (
-    <div style={styles.modalBack} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={styles.modal}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 950, fontSize: 18 }}>{wo.wo_number}</div>
-          <span style={styles.pill("gray")}>{wo.station}</span>
-          <span style={styles.pill("blue")}>{wo.part_number}</span>
-          <span style={{ marginLeft: "auto" }} />
-          <button style={styles.btn("light")} onClick={load}>{busy ? "Loading..." : "Refresh"}</button>
-          <button style={styles.btn("light")} onClick={onClose}>Close</button>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1.15fr .85fr", gap: 12 }}>
-          <div style={styles.card}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 950 }}>Actions</div>
-
-              <button
-                style={styles.btn("light")}
-                onClick={() => {
-                  const url = `${API_BASE}/work-orders/${wo.id}/print?token=${encodeURIComponent(token)}`;
-                  window.open(url, "_blank", "noopener,noreferrer");
-                }}
-              >
-                Pop Out / Print PDF
-              </button>
-
-              {wo.part_id ? (
-                <button
-                  style={styles.btn("light")}
-                  onClick={() => window.open(`${API_BASE}/parts/${wo.part_id}/file`, "_blank", "noopener,noreferrer")}
-                >
-                  Open Instructions
-                </button>
-              ) : null}
-
-              <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                <button
-                  style={styles.btn(isCheckedIn ? "dark" : "green")}
-                  onClick={async () => {
-                    try {
-                      if (isCheckedIn) {
-                        await api(`/work-orders/${wo.id}/workers/check-out`, { method: "POST", token });
-                        onOk("Checked out.");
-                      } else {
-                        await api(`/work-orders/${wo.id}/workers/check-in`, { method: "POST", token });
-                        onOk("Checked in.");
-                      }
-                      await load();
-                      await onRefresh();
-                    } catch (e) {
-                      onError(e.message);
-                    }
-                  }}
-                >
-                  {isCheckedIn ? "Check Out" : "Check In"}
-                </button>
-
-                {canManage ? (
-                  <>
-                    <button
-                      style={styles.btn("green")}
-                      onClick={async () => {
-                        try {
-                          await api(`/work-orders/${wo.id}/complete`, { method: "POST", token });
-                          onOk("Work order marked complete.");
-                          await onRefresh();
-                        } catch (e) {
-                          onError(e.message);
-                        }
-                      }}
-                    >
-                      Complete
-                    </button>
-                    <button
-                      style={styles.btn("dark")}
-                      onClick={async () => {
-                        try {
-                          await api(`/work-orders/${wo.id}/close`, { method: "POST", token });
-                          onOk("Work order closed.");
-                          await onRefresh();
-                        } catch (e) {
-                          onError(e.message);
-                        }
-                      }}
-                    >
-                      Close WO
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 950, marginBottom: 8 }}>Currently Checked In</div>
-              {workers.length ? (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {workers.map((w) => (
-                    <span key={w.user_id} style={styles.pill("green")}>
-                      {w.name} • {w.role}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ opacity: 0.7 }}>No one checked in.</div>
-              )}
-            </div>
-
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontWeight: 950, marginBottom: 8 }}>Add Note</div>
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Type a note..."
-                style={{ ...styles.input, minHeight: 90, resize: "vertical" }}
-              />
-              <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
-                <button
-                  style={styles.btn("dark")}
-                  onClick={async () => {
-                    try {
-                      const t = text.trim();
-                      if (!t) return;
-                      await api(`/work-orders/${wo.id}/notes`, { method: "POST", token, body: { text: t } });
-                      setText("");
-                      onOk("Note added.");
-                      await load();
-                    } catch (e) {
-                      onError(e.message);
-                    }
-                  }}
-                >
-                  Add Note
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div style={styles.card}>
-            <div style={{ fontWeight: 950, marginBottom: 10 }}>Notes</div>
-            {notes.length ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {notes.slice().reverse().map((n) => (
-                  <div key={n.id} style={{ border: "1px solid rgba(0,0,0,0.08)", borderRadius: 14, padding: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 950 }}>{n.author_name}</div>
-                      <div style={{ opacity: 0.65, fontSize: 12 }}>{fmtDT(n.created_at)}</div>
-                    </div>
-                    <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{n.text}</div>
+                    {canManage && (
+                      <>
+                        <button style={styles.btn("green")} onClick={() => complete(w.id)}>Complete</button>
+                        <button style={styles.btn("dark")} onClick={() => close(w.id)}>Close</button>
+                        <button style={styles.btn()} onClick={() => reopen(w.id)}>Reopen</button>
+                        <button style={styles.btn("danger")} onClick={() => delWO(w.id)}>Delete</button>
+                      </>
+                    )}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ opacity: 0.7 }}>No notes yet.</div>
-            )}
-          </div>
-        </div>
-
-        <div style={{ marginTop: 10, opacity: 0.6, fontSize: 12 }}>
-          Tip: The PDF button uses <code>?token=</code> so it works in a pop-out window.
-        </div>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: 20, color: "#666" }}>No work orders found.</td></tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-// -----------------------------
-// Create Work Order (its own tab)
-// -----------------------------
-function CreateWorkOrder({ token, user, onError, onOk }) {
-  const [parts, setParts] = React.useState([]);
+function CreateWOPage({ token, user, onError }) {
   const [station, setStation] = React.useState("");
+  const [parts, setParts] = React.useState([]);
   const [partId, setPartId] = React.useState("");
   const [partNumber, setPartNumber] = React.useState("");
   const [customerOrder, setCustomerOrder] = React.useState("");
@@ -722,278 +251,189 @@ function CreateWorkOrder({ token, user, onError, onOk }) {
       setParts(p || []);
     } catch (e) {
       onError(e.message);
+      setParts([]);
     }
   }
 
   React.useEffect(() => { loadParts(); }, []);
 
+  async function submit() {
+    setBusy(true);
+    try {
+      const body = {
+        station: station.trim(),
+        is_stock: !!isStock,
+      };
+      if (partId) body.part_id = Number(partId);
+      else body.part_number = (partNumber || "").trim();
+      if (!isStock) body.customer_order = (customerOrder || "").trim() || null;
+
+      await api("/work-orders", { token, method: "POST", body });
+      setStation("");
+      setPartId("");
+      setPartNumber("");
+      setCustomerOrder("");
+      setIsStock(false);
+      alert("Work order created!");
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div style={{ marginTop: 16 }}>
-      <div style={styles.card}>
-        <h2 style={styles.h2}>Create Work Order</h2>
+    <div style={styles.card}>
+      <h2 style={{ marginTop: 0 }}>Create Work Order</h2>
+      <div style={styles.row}>
+        <input style={styles.input} placeholder="Station (e.g. Electrical)" value={station} onChange={(e) => setStation(e.target.value)} />
+        <select style={styles.select} value={partId} onChange={(e) => { setPartId(e.target.value); }}>
+          <option value="">Select Part by ID (optional)</option>
+          {parts.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.part_number} (ID {p.id})
+            </option>
+          ))}
+        </select>
+        <input
+          style={styles.input}
+          placeholder="Or type Part Number"
+          value={partNumber}
+          onChange={(e) => setPartNumber(e.target.value)}
+          disabled={!!partId}
+        />
+      </div>
 
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div>
-            <div style={styles.label}>Station</div>
-            <input style={styles.input} value={station} onChange={(e) => setStation(e.target.value)} placeholder="Electrical" />
-          </div>
+      <div style={{ ...styles.row, marginTop: 10 }}>
+        <input
+          style={styles.input}
+          placeholder="Customer Order"
+          value={customerOrder}
+          onChange={(e) => setCustomerOrder(e.target.value)}
+          disabled={isStock}
+        />
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}>
+          <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
+          Stock Job
+        </label>
+        <button style={styles.btn("green")} onClick={submit} disabled={busy || !station.trim() || (!partId && !partNumber.trim())}>
+          {busy ? "Creating..." : "Create Work Order"}
+        </button>
+      </div>
 
-          <div>
-            <div style={styles.label}>Pick a Part (optional)</div>
-            <select
-              style={styles.input}
-              value={partId}
-              onChange={(e) => {
-                setPartId(e.target.value);
-                if (e.target.value) setPartNumber("");
-              }}
-            >
-              <option value="">— choose —</option>
-              {parts.map((p) => (
-                <option key={p.id} value={String(p.id)}>
-                  {p.part_number}{p.description ? ` — ${p.description}` : ""}{p.has_file ? " (📄)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ gridColumn: "1 / -1" }}>
-            <div style={styles.label}>Or type Part Number (if not in parts list)</div>
-            <input
-              style={styles.input}
-              value={partNumber}
-              onChange={(e) => {
-                setPartNumber(e.target.value);
-                if (e.target.value) setPartId("");
-              }}
-              placeholder="HAR-M100L-STD"
-            />
-          </div>
-
-          <div>
-            <div style={styles.label}>Customer Order</div>
-            <input
-              style={styles.input}
-              value={customerOrder}
-              onChange={(e) => setCustomerOrder(e.target.value)}
-              placeholder="45625"
-              disabled={isStock}
-            />
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={isStock}
-              onChange={(e) => setIsStock(e.target.checked)}
-              id="stock"
-            />
-            <label htmlFor="stock" style={{ fontWeight: 900 }}>Stock Job</label>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-          <button
-            style={styles.btn("dark")}
-            disabled={busy}
-            onClick={async () => {
-              try {
-                setBusy(true);
-                const body = {
-                  station,
-                  is_stock: !!isStock,
-                  customer_order: isStock ? null : (customerOrder || null),
-                };
-                if (partId) body.part_id = Number(partId);
-                if (!partId) body.part_number = partNumber;
-
-                const res = await api("/work-orders", { method: "POST", token, body });
-                onOk(`Created ${res.wo_number}`);
-                setStation("");
-                setPartId("");
-                setPartNumber("");
-                setCustomerOrder("");
-                setIsStock(false);
-              } catch (e) {
-                onError(e.message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? "Creating..." : "Create Work Order"}
-          </button>
-
-          <button style={styles.btn("light")} onClick={loadParts}>Refresh Parts</button>
-        </div>
+      <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
+        Tip: choose a Part from the dropdown for best consistency. If it’s a Stock Job, Customer Order will be blank.
       </div>
     </div>
   );
 }
 
-// -----------------------------
-// Parts Tab
-// -----------------------------
-function Parts({ token, user, onError, onOk }) {
+function PartsPage({ token, user, onError }) {
+  const canManage = user?.role === "admin" || user?.role === "supervisor";
   const [parts, setParts] = React.useState([]);
-  const [q, setQ] = React.useState("");
-
   const [pn, setPn] = React.useState("");
   const [desc, setDesc] = React.useState("");
   const [file, setFile] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
 
-  const canManage = user.role === "admin" || user.role === "supervisor";
-
   async function refresh() {
     try {
       const p = await api("/parts", { token });
       setParts(p || []);
     } catch (e) {
       onError(e.message);
+      setParts([]);
+    }
+  }
+  React.useEffect(() => { refresh(); }, []);
+
+  async function addPart() {
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("part_number", pn.trim());
+      if (desc.trim()) fd.append("description", desc.trim());
+      if (file) fd.append("file", file);
+
+      await api("/parts", { token, method: "POST", body: fd, isForm: true });
+      setPn(""); setDesc(""); setFile(null);
+      await refresh();
+      alert("Part added!");
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setBusy(false);
     }
   }
 
-  React.useEffect(() => { refresh(); }, []);
-
-  const filtered = parts.filter((p) => {
-    if (!q.trim()) return true;
-    const s = `${p.part_number} ${p.description || ""}`.toLowerCase();
-    return s.includes(q.toLowerCase());
-  });
+  function openFile(p) {
+    window.open(`${API_BASE}/parts/${p.id}/file`, "_blank", "noopener,noreferrer");
+  }
 
   return (
-    <div style={{ marginTop: 16 }}>
-      <div style={styles.card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <h2 style={styles.h2}>Parts</h2>
-          <span style={styles.pill("gray")}>{filtered.length} parts</span>
+    <div style={styles.card}>
+      <h2 style={{ marginTop: 0 }}>Parts</h2>
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              style={{ ...styles.input, width: 340, maxWidth: "100%" }}
-              placeholder="Search part number / description..."
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <button style={styles.btn("light")} onClick={refresh}>Refresh</button>
+      {canManage ? (
+        <div style={{ ...styles.card, marginTop: 10, boxShadow: "none", border: "1px solid #ececf6" }}>
+          <h3 style={{ marginTop: 0 }}>Add Part (optional instruction file)</h3>
+          <div style={styles.row}>
+            <input style={styles.input} placeholder="Part Number" value={pn} onChange={(e) => setPn(e.target.value)} />
+            <input style={{ ...styles.input, width: 360 }} placeholder="Description (optional)" value={desc} onChange={(e) => setDesc(e.target.value)} />
+            <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <button style={styles.btn("green")} onClick={addPart} disabled={busy || !pn.trim()}>
+              {busy ? "Saving..." : "Add Part"}
+            </button>
           </div>
         </div>
+      ) : (
+        <div style={{ color: "#666", fontSize: 12 }}>Only Admin/Supervisor can add parts.</div>
+      )}
 
-        {canManage ? (
-          <div style={{ marginTop: 14, padding: 14, borderRadius: 18, border: "1px dashed rgba(0,0,0,0.18)" }}>
-            <div style={{ fontWeight: 950, marginBottom: 10 }}>Add Part (optional instruction PDF)</div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <div style={styles.label}>Part Number</div>
-                <input style={styles.input} value={pn} onChange={(e) => setPn(e.target.value)} placeholder="HAR-M100L-STD" />
-              </div>
-
-              <div>
-                <div style={styles.label}>Description (optional)</div>
-                <input style={styles.input} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Main harness..." />
-              </div>
-
-              <div style={{ gridColumn: "1 / -1" }}>
-                <div style={styles.label}>Instruction File (optional)</div>
-                <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-              <button
-                style={styles.btn("dark")}
-                disabled={busy}
-                onClick={async () => {
-                  try {
-                    setBusy(true);
-                    const form = new FormData();
-                    form.append("part_number", pn);
-                    if (desc) form.append("description", desc);
-                    if (file) form.append("file", file);
-
-                    await api("/parts", { method: "POST", token, body: form, isForm: true });
-                    onOk("Part added.");
-                    setPn("");
-                    setDesc("");
-                    setFile(null);
-                    await refresh();
-                  } catch (e) {
-                    onError(e.message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {busy ? "Saving..." : "Add Part"}
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        <div style={{ marginTop: 14 }}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Part</th>
-                <th style={styles.th}>Description</th>
-                <th style={styles.th}>Instructions</th>
-                <th style={styles.th}>Qty</th>
+      <div style={{ marginTop: 14 }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Part #</th>
+              <th style={styles.th}>Description</th>
+              <th style={styles.th}>File</th>
+              <th style={styles.th}>Qty</th>
+              <th style={styles.th}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {parts.map((p) => (
+              <tr key={p.id} style={styles.trCard}>
+                <td style={styles.td}><div style={{ fontWeight: 900 }}>{p.part_number}</div><div style={{ fontSize: 12, color: "#666" }}>ID {p.id}</div></td>
+                <td style={styles.td}>{p.description || <span style={{ color: "#aaa" }}>—</span>}</td>
+                <td style={styles.td}>{p.has_file ? (p.filename || "file") : <span style={{ color: "#aaa" }}>none</span>}</td>
+                <td style={styles.td}><span style={styles.pill("#eef2ff", "#3b49df")}>{p.qty_on_hand || 0}</span></td>
+                <td style={styles.td}>
+                  {p.has_file ? (
+                    <button style={styles.btn()} onClick={() => openFile(p)}>Open Instructions</button>
+                  ) : (
+                    <button style={{ ...styles.btn(), opacity: 0.55 }} disabled>No File</button>
+                  )}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id}>
-                  <td style={styles.td}>
-                    <div style={{ fontWeight: 950 }}>{p.part_number}</div>
-                    <div style={{ opacity: 0.65, fontSize: 12 }}>ID: {p.id}</div>
-                  </td>
-                  <td style={styles.td}>{p.description || <span style={{ opacity: 0.6 }}>—</span>}</td>
-                  <td style={styles.td}>
-                    {p.has_file ? (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button style={styles.btn("light")} onClick={() => window.open(`${API_BASE}/parts/${p.id}/file`, "_blank", "noopener,noreferrer")}>
-                          View
-                        </button>
-                        <button style={styles.btn("light")} onClick={() => window.open(`${API_BASE}/parts/${p.id}/download`, "_blank", "noopener,noreferrer")}>
-                          Download
-                        </button>
-                      </div>
-                    ) : (
-                      <span style={{ opacity: 0.65 }}>No file</span>
-                    )}
-                  </td>
-                  <td style={styles.td}>
-                    <span style={styles.pill("gray")}>{p.qty_on_hand || 0}</span>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 ? (
-                <tr>
-                  <td style={styles.td} colSpan={4}>No parts found.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+            ))}
+            {parts.length === 0 ? (
+              <tr><td colSpan={5} style={{ padding: 20, color: "#666" }}>No parts yet.</td></tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-// -----------------------------
-// Inventory Tab
-// -----------------------------
-function Inventory({ token, user, onError, onOk }) {
+function InventoryPage({ token, user, onError }) {
+  const canManage = user?.role === "admin" || user?.role === "supervisor";
   const [parts, setParts] = React.useState([]);
-  const [q, setQ] = React.useState("");
-  const [qtyMap, setQtyMap] = React.useState({});
-  const [noteMap, setNoteMap] = React.useState({});
-  const [txnsPart, setTxnsPart] = React.useState(null);
+  const [selected, setSelected] = React.useState("");
+  const [qty, setQty] = React.useState(1);
+  const [note, setNote] = React.useState("");
   const [txns, setTxns] = React.useState([]);
-
-  const canManage = user.role === "admin" || user.role === "supervisor";
 
   async function refresh() {
     try {
@@ -1001,323 +441,292 @@ function Inventory({ token, user, onError, onOk }) {
       setParts(p || []);
     } catch (e) {
       onError(e.message);
+      setParts([]);
     }
   }
 
   React.useEffect(() => { refresh(); }, []);
 
-  const filtered = parts.filter((p) => {
-    if (!q.trim()) return true;
-    const s = `${p.part_number} ${p.description || ""}`.toLowerCase();
-    return s.includes(q.toLowerCase());
-  });
-
   async function loadTxns(partId) {
+    if (!partId) { setTxns([]); return; }
     try {
-      const rows = await api(`/inventory/${partId}/txns?limit=200`, { token });
-      setTxns(rows || []);
-      setTxnsPart(partId);
+      const t = await api(`/parts/${partId}/inventory/txns`, { token });
+      setTxns(t || []);
     } catch (e) {
       onError(e.message);
+      setTxns([]);
     }
   }
 
-  async function change(partId, type) {
+  React.useEffect(() => { loadTxns(selected); }, [selected]);
+
+  async function receive() {
     try {
-      if (!canManage) return;
-      const qty = Number(qtyMap[partId] || 0);
-      if (!qty || qty <= 0) throw new Error("Enter a quantity > 0");
-
-      const note = noteMap[partId] || null;
-      const path = type === "add" ? `/inventory/${partId}/add` : `/inventory/${partId}/remove`;
-
-      await api(path, { method: "POST", token, body: { qty, note } });
-      onOk(type === "add" ? "Added inventory." : "Removed inventory.");
-      setQtyMap((m) => ({ ...m, [partId]: "" }));
-      setNoteMap((m) => ({ ...m, [partId]: "" }));
+      await api(`/parts/${selected}/inventory/receive`, { token, method: "POST", body: { qty: Number(qty), note: note || null } });
+      setNote("");
       await refresh();
-      if (txnsPart === partId) await loadTxns(partId);
-    } catch (e) {
-      onError(e.message);
-    }
+      await loadTxns(selected);
+    } catch (e) { onError(e.message); }
   }
+
+  async function issue() {
+    try {
+      await api(`/parts/${selected}/inventory/issue`, { token, method: "POST", body: { qty: Number(qty), note: note || null } });
+      setNote("");
+      await refresh();
+      await loadTxns(selected);
+    } catch (e) { onError(e.message); }
+  }
+
+  const currentPart = parts.find((p) => String(p.id) === String(selected));
 
   return (
-    <div style={{ marginTop: 16 }}>
-      <div style={styles.card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <h2 style={styles.h2}>Inventory</h2>
-          <span style={styles.pill("gray")}>{filtered.length} parts</span>
+    <div style={styles.card}>
+      <h2 style={{ marginTop: 0 }}>Inventory</h2>
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              style={{ ...styles.input, width: 340, maxWidth: "100%" }}
-              placeholder="Search parts..."
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <button style={styles.btn("light")} onClick={refresh}>Refresh</button>
-          </div>
+      <div style={styles.row}>
+        <select style={styles.select} value={selected} onChange={(e) => setSelected(e.target.value)}>
+          <option value="">Select Part</option>
+          {parts.map((p) => (
+            <option key={p.id} value={p.id}>{p.part_number} (Qty {p.qty_on_hand || 0})</option>
+          ))}
+        </select>
+
+        <input style={{ ...styles.input, width: 120 }} type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} />
+        <input style={{ ...styles.input, width: 360 }} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+
+        <button style={styles.btn("green")} onClick={receive} disabled={!canManage || !selected}>Receive</button>
+        <button style={styles.btn("dark")} onClick={issue} disabled={!canManage || !selected}>Issue</button>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 12, color: "#666" }}>
+          {currentPart ? <>Current Qty: <b>{currentPart.qty_on_hand || 0}</b></> : "Pick a part to view transactions."}
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 0.9fr", gap: 12 }}>
-          <div style={styles.card}>
-            <div style={{ fontWeight: 950, marginBottom: 10 }}>Parts</div>
-
+        {selected ? (
+          <div style={{ marginTop: 10 }}>
+            <h3 style={{ margin: "10px 0" }}>Transactions</h3>
             <table style={styles.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>Part</th>
-                  <th style={styles.th}>On Hand</th>
-                  <th style={styles.th}>Change</th>
-                  <th style={styles.th}>History</th>
+                  <th style={styles.th}>When</th>
+                  <th style={styles.th}>Type</th>
+                  <th style={styles.th}>Delta</th>
+                  <th style={styles.th}>Note</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((p) => (
-                  <tr key={p.id}>
-                    <td style={styles.td}>
-                      <div style={{ fontWeight: 950 }}>{p.part_number}</div>
-                      <div style={{ opacity: 0.7, fontSize: 12 }}>{p.description || ""}</div>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={styles.pill("gray")}>{p.qty_on_hand || 0}</span>
-                    </td>
-                    <td style={styles.td}>
-                      {canManage ? (
-                        <div style={{ display: "grid", gap: 8 }}>
-                          <input
-                            style={{ ...styles.input, padding: "8px 10px" }}
-                            placeholder="Qty"
-                            value={qtyMap[p.id] ?? ""}
-                            onChange={(e) => setQtyMap((m) => ({ ...m, [p.id]: e.target.value }))}
-                          />
-                          <input
-                            style={{ ...styles.input, padding: "8px 10px" }}
-                            placeholder="Note (optional)"
-                            value={noteMap[p.id] ?? ""}
-                            onChange={(e) => setNoteMap((m) => ({ ...m, [p.id]: e.target.value }))}
-                          />
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button style={styles.btn("green")} onClick={() => change(p.id, "add")}>Add</button>
-                            <button style={styles.btn("red")} onClick={() => change(p.id, "remove")}>Remove</button>
-                          </div>
-                        </div>
-                      ) : (
-                        <span style={{ opacity: 0.6 }}>Supervisor/Admin only</span>
-                      )}
-                    </td>
-                    <td style={styles.td}>
-                      <button style={styles.btn("light")} onClick={() => loadTxns(p.id)}>View</button>
-                    </td>
+                {txns.map((t) => (
+                  <tr key={t.id} style={styles.trCard}>
+                    <td style={styles.td}>{new Date(t.created_at).toLocaleString()}</td>
+                    <td style={styles.td}><span style={styles.pill("#f0f0f0", "#222")}>{t.txn_type}</span></td>
+                    <td style={styles.td} style={{ ...styles.td, fontWeight: 900 }}>{t.qty_delta}</td>
+                    <td style={styles.td}>{t.note || <span style={{ color: "#aaa" }}>—</span>}</td>
                   </tr>
                 ))}
-                {filtered.length === 0 ? (
-                  <tr><td style={styles.td} colSpan={4}>No parts found.</td></tr>
+                {txns.length === 0 ? (
+                  <tr><td colSpan={4} style={{ padding: 20, color: "#666" }}>No transactions.</td></tr>
                 ) : null}
               </tbody>
             </table>
           </div>
-
-          <div style={styles.card}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ fontWeight: 950 }}>Transaction History</div>
-              {txnsPart ? <span style={styles.pill("blue")}>Part ID: {txnsPart}</span> : null}
-            </div>
-
-            <div style={{ marginTop: 10 }}>
-              {txnsPart ? (
-                txns.length ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {txns.map((t) => (
-                      <div key={t.id} style={{ border: "1px solid rgba(0,0,0,0.08)", borderRadius: 14, padding: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          <div style={{ fontWeight: 950 }}>{t.txn_type} ({t.qty_delta})</div>
-                          <div style={{ opacity: 0.65, fontSize: 12 }}>{fmtDT(t.created_at)}</div>
-                        </div>
-                        {t.note ? <div style={{ marginTop: 6, opacity: 0.9 }}>{t.note}</div> : <div style={{ marginTop: 6, opacity: 0.6 }}>No note</div>}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ opacity: 0.7 }}>No transactions yet.</div>
-                )
-              ) : (
-                <div style={{ opacity: 0.7 }}>Pick a part and click “View”.</div>
-              )}
-            </div>
-          </div>
-        </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
-// -----------------------------
-// Admin Tab
-// -----------------------------
-function Admin({ token, user, onError, onOk }) {
-  const isAdmin = user.role === "admin";
+function AdminPage({ token, user, onError }) {
+  const isAdmin = user?.role === "admin";
   const [users, setUsers] = React.useState([]);
-
-  const [newName, setNewName] = React.useState("");
-  const [newRole, setNewRole] = React.useState("assembler");
-  const [newPin, setNewPin] = React.useState("");
-
+  const [name, setName] = React.useState("");
+  const [role, setRole] = React.useState("assembler");
+  const [pin, setPin] = React.useState("");
   const [resetToken, setResetToken] = React.useState("");
   const [resetName, setResetName] = React.useState("");
-  const [resetPin, setResetPin] = React.useState("");
+  const [newPin, setNewPin] = React.useState("");
 
   async function refresh() {
     try {
-      const rows = await api("/users", { token });
-      setUsers(rows || []);
+      const u = await api("/users", { token });
+      setUsers(u || []);
     } catch (e) {
       onError(e.message);
+      setUsers([]);
     }
   }
 
   React.useEffect(() => { refresh(); }, []);
 
+  async function createUser() {
+    try {
+      await api("/users", { token, method: "POST", body: { name, role, pin } });
+      setName(""); setPin("");
+      refresh();
+    } catch (e) { onError(e.message); }
+  }
+
+  async function doReset() {
+    try {
+      await api("/admin/reset-pin", {
+        token,
+        method: "POST",
+        body: { name: resetName, new_pin: newPin },
+        // RESET_TOKEN is sent as header:
+        // We can’t set custom headers in the simple api() without extending; do it manually here:
+      });
+    } catch (e) {
+      // fallback manual call with header
+      try {
+        const res = await fetch(`${API_BASE}/admin/reset-pin`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+            "x-reset-token": resetToken,
+          },
+          body: JSON.stringify({ name: resetName, new_pin: newPin }),
+        });
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+        if (!res.ok) throw new Error((data && data.detail) ? data.detail : `HTTP ${res.status}`);
+        alert("PIN reset!");
+      } catch (e2) {
+        onError(e2.message);
+      }
+      return;
+    }
+    alert("PIN reset!");
+  }
+
   return (
-    <div style={{ marginTop: 16 }}>
-      <div style={styles.card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h2 style={styles.h2}>Admin</h2>
-          <span style={styles.pill(isAdmin ? "green" : "gray")}>{isAdmin ? "Admin" : "Supervisor"}</span>
-          <button style={{ ...styles.btn("light"), marginLeft: "auto" }} onClick={refresh}>Refresh</button>
+    <div style={styles.card}>
+      <h2 style={{ marginTop: 0 }}>Admin</h2>
+      {!isAdmin ? <div style={{ color: "#666" }}>Admin-only features are restricted.</div> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
+        <div style={{ ...styles.card, marginTop: 0, boxShadow: "none", border: "1px solid #ececf6" }}>
+          <h3 style={{ marginTop: 0 }}>Create User</h3>
+          <div style={{ display: "grid", gap: 8 }}>
+            <input style={styles.input} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+            <select style={styles.select} value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="assembler">assembler</option>
+              <option value="supervisor">supervisor</option>
+              <option value="admin">admin</option>
+            </select>
+            <input style={styles.input} placeholder="PIN (4-6 digits)" value={pin} onChange={(e) => setPin(e.target.value)} />
+            <button style={styles.btn("dark")} onClick={createUser} disabled={!isAdmin || !name || !pin}>Create User</button>
+          </div>
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div style={styles.card}>
-            <div style={{ fontWeight: 950, marginBottom: 10 }}>Create User (Admin only)</div>
-            {!isAdmin ? (
-              <div style={{ opacity: 0.7 }}>Only admins can create users.</div>
-            ) : (
-              <>
-                <div style={styles.label}>Name</div>
-                <input style={styles.input} value={newName} onChange={(e) => setNewName(e.target.value)} />
-
-                <div style={{ marginTop: 10, ...styles.label }}>Role</div>
-                <select style={styles.input} value={newRole} onChange={(e) => setNewRole(e.target.value)}>
-                  <option value="assembler">assembler</option>
-                  <option value="supervisor">supervisor</option>
-                  <option value="admin">admin</option>
-                </select>
-
-                <div style={{ marginTop: 10, ...styles.label }}>PIN</div>
-                <input style={styles.input} value={newPin} onChange={(e) => setNewPin(e.target.value)} />
-
-                <div style={{ marginTop: 12 }}>
-                  <button
-                    style={styles.btn("dark")}
-                    onClick={async () => {
-                      try {
-                        await api("/users", { method: "POST", token, body: { name: newName, role: newRole, pin: newPin } });
-                        onOk("User created.");
-                        setNewName(""); setNewPin(""); setNewRole("assembler");
-                        await refresh();
-                      } catch (e) { onError(e.message); }
-                    }}
-                  >
-                    Create User
-                  </button>
-                </div>
-              </>
-            )}
+        <div style={{ ...styles.card, marginTop: 0, boxShadow: "none", border: "1px solid #ececf6" }}>
+          <h3 style={{ marginTop: 0 }}>Reset User PIN</h3>
+          <div style={{ display: "grid", gap: 8 }}>
+            <input style={styles.input} placeholder="RESET_TOKEN" value={resetToken} onChange={(e) => setResetToken(e.target.value)} />
+            <input style={styles.input} placeholder="User Name" value={resetName} onChange={(e) => setResetName(e.target.value)} />
+            <input style={styles.input} placeholder="New PIN" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
+            <button style={styles.btn("dark")} onClick={doReset} disabled={!isAdmin || !resetToken || !resetName || !newPin}>Reset PIN</button>
           </div>
+        </div>
+      </div>
 
-          <div style={styles.card}>
-            <div style={{ fontWeight: 950, marginBottom: 10 }}>Reset User PIN (Uses RESET_TOKEN)</div>
-
-            <div style={styles.label}>RESET_TOKEN</div>
-            <input style={styles.input} value={resetToken} onChange={(e) => setResetToken(e.target.value)} />
-
-            <div style={{ marginTop: 10, ...styles.label }}>User Name</div>
-            <input style={styles.input} value={resetName} onChange={(e) => setResetName(e.target.value)} />
-
-            <div style={{ marginTop: 10, ...styles.label }}>New PIN</div>
-            <input style={styles.input} value={resetPin} onChange={(e) => setResetPin(e.target.value)} />
-
-            <div style={{ marginTop: 12 }}>
-              <button
-                style={styles.btn("dark")}
-                onClick={async () => {
-                  try {
-                    await api("/admin/reset-pin", {
-                      method: "POST",
-                      token,
-                      body: { name: resetName, new_pin: resetPin },
-                      // header handled in backend via x-reset-token, easiest is fetch manually:
-                    });
-                    // Above API helper can't set custom header, so do raw fetch:
-                  } catch (e) {}
-                }}
-              />
-              <button
-                style={styles.btn("dark")}
-                onClick={async () => {
-                  try {
-                    const res = await fetch(`${API_BASE}/admin/reset-pin`, {
-                      method: "POST",
-                      headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${token}`,
-                        "x-reset-token": resetToken,
-                      },
-                      body: JSON.stringify({ name: resetName, new_pin: resetPin }),
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(data.detail || "Reset failed");
-                    onOk("PIN reset.");
-                    setResetName(""); setResetPin("");
-                  } catch (e) {
-                    onError(e.message);
-                  }
-                }}
-              >
-                Reset PIN
-              </button>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ ...styles.row, justifyContent: "space-between" }}>
+          <h3 style={{ margin: 0 }}>Users</h3>
+          <button style={styles.btn()} onClick={refresh}>Refresh</button>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          {users.map((u) => (
+            <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 10, borderRadius: 12, border: "1px solid #ececf6", background: "#fbfbfe", marginBottom: 8 }}>
+              <div>
+                <div style={{ fontWeight: 900 }}>{u.name} <span style={{ fontWeight: 700, color: "#666" }}>({u.role})</span></div>
+                <div style={{ fontSize: 12, color: "#666" }}>{u.is_active ? "active" : "inactive"}</div>
+              </div>
             </div>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 950, marginBottom: 10 }}>Users</div>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Name</th>
-                <th style={styles.th}>Role</th>
-                <th style={styles.th}>Active</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td style={styles.td}><b>{u.name}</b></td>
-                  <td style={styles.td}><span style={styles.pill(u.role === "admin" ? "green" : u.role === "supervisor" ? "blue" : "gray")}>{u.role}</span></td>
-                  <td style={styles.td}>{u.is_active ? "active" : "inactive"}</td>
-                </tr>
-              ))}
-              {users.length === 0 ? (
-                <tr><td style={styles.td} colSpan={3}>No users.</td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-
-        <div style={{ marginTop: 10, opacity: 0.65, fontSize: 12 }}>
-          Admin reset uses your backend env var <code>RESET_TOKEN</code>.
+          ))}
+          {users.length === 0 ? <div style={{ color: "#666" }}>No users loaded.</div> : null}
         </div>
       </div>
     </div>
   );
 }
 
-// -----------------------------
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+function App() {
+  const [session, setSession] = React.useState(null); // {token,name,role}
+  const [tab, setTab] = React.useState("work_orders");
+  const [error, setError] = React.useState("");
+
+  const user = session ? { name: session.name, role: session.role } : null;
+
+  function onLogin(resp, err) {
+    if (!resp) {
+      setError(err || "Login failed");
+      return;
+    }
+    setSession(resp);
+    setError("");
+    setTab("work_orders");
+  }
+
+  function logout() {
+    setSession(null);
+    setTab("work_orders");
+    setError("");
+  }
+
+  const tabs = [
+    { id: "work_orders", label: "Work Orders" },
+    { id: "create_wo", label: "Create WO" },
+    { id: "inventory", label: "Inventory" },
+    { id: "parts", label: "Parts" },
+    { id: "admin", label: "Admin" },
+  ];
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.shell}>
+        <div style={styles.header}>
+          <div style={styles.brand}>
+            <div style={styles.h1}>TRR Assembly Work Orders</div>
+            <div style={styles.sub}>
+              {session ? `Logged in as ${session.name} (${session.role}) • API: ${API_BASE}` : `API: ${API_BASE}`}
+            </div>
+          </div>
+
+          <div style={styles.tabs}>
+            {tabs.map((t) => (
+              <button key={t.id} style={styles.tab(tab === t.id)} onClick={() => setTab(t.id)} disabled={!session}>
+                {t.label}
+              </button>
+            ))}
+            <button style={styles.tab(false)} onClick={logout} disabled={!session}>Logout</button>
+          </div>
+        </div>
+
+        {error ? (
+          <div style={styles.banner}>
+            <div style={{ fontWeight: 900 }}>Internal Server Error</div>
+            <div style={{ flex: 1, paddingLeft: 10 }}>{error}</div>
+            <button style={styles.btn()} onClick={() => setError("")}>X</button>
+          </div>
+        ) : null}
+
+        {!session ? (
+          <Login onLogin={onLogin} error={error} />
+        ) : (
+          <>
+            {tab === "work_orders" && <WorkOrdersPage token={session.token} user={user} onError={setError} />}
+            {tab === "create_wo" && <CreateWOPage token={session.token} user={user} onError={setError} />}
+            {tab === "inventory" && <InventoryPage token={session.token} user={user} onError={setError} />}
+            {tab === "parts" && <PartsPage token={session.token} user={user} onError={setError} />}
+            {tab === "admin" && <AdminPage token={session.token} user={user} onError={setError} />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);
