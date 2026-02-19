@@ -1,11 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 
-/**
- * Configure API base:
- * - Render: set VITE_API_URL to https://trr-assembly-api.onrender.com
- * - Local: http://127.0.0.1:8000
- */
 const API_BASE = (import.meta.env.VITE_API_URL || "https://trr-assembly-api.onrender.com").replace(/\/+$/, "");
 
 async function api(path, { token, method = "GET", body, isForm = false } = {}) {
@@ -30,8 +25,6 @@ async function api(path, { token, method = "GET", body, isForm = false } = {}) {
   }
   return data;
 }
-
-function cls(...xs) { return xs.filter(Boolean).join(" "); }
 
 const styles = {
   page: { fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", background: "#f6f7fb", minHeight: "100vh" },
@@ -68,6 +61,8 @@ const styles = {
   trCard: { background: "#fbfbfe", border: "1px solid #ececf6" },
   td: { padding: "12px 10px", verticalAlign: "top" },
   pill: (bg, fg) => ({ display: "inline-block", padding: "4px 10px", borderRadius: 999, fontSize: 12, fontWeight: 800, background: bg, color: fg }),
+  modalBackdrop: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", justifyContent: "center", alignItems: "center", padding: 16, zIndex: 50 },
+  modal: { width: "min(1000px, 100%)", maxHeight: "90vh", overflow: "auto", background: "white", borderRadius: 18, boxShadow: "0 20px 60px rgba(0,0,0,0.25)", padding: 16 },
 };
 
 function Login({ onLogin, error }) {
@@ -102,9 +97,171 @@ function Login({ onLogin, error }) {
   );
 }
 
+function WorkOrderModal({ token, user, woId, onClose, onError }) {
+  const [data, setData] = React.useState(null);
+  const [note, setNote] = React.useState("");
+  const canManage = user?.role === "admin" || user?.role === "supervisor";
+
+  async function load() {
+    try {
+      const d = await api(`/work-orders/${woId}/details`, { token });
+      setData(d);
+    } catch (e) {
+      onError(e.message);
+      setData(null);
+    }
+  }
+
+  React.useEffect(() => { load(); }, [woId]);
+
+  if (!data) {
+    return (
+      <div style={styles.modalBackdrop} onMouseDown={onClose}>
+        <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Work Order</h2>
+            <button style={styles.btn()} onClick={onClose}>Close</button>
+          </div>
+          <div style={{ marginTop: 10, color: "#666" }}>Loading…</div>
+        </div>
+      </div>
+    );
+  }
+
+  const w = data.work_order;
+
+  async function checkIn() { try { await api(`/work-orders/${w.id}/workers/check-in`, { token, method: "POST" }); await load(); } catch (e) { onError(e.message); } }
+  async function checkOut() { try { await api(`/work-orders/${w.id}/workers/check-out`, { token, method: "POST" }); await load(); } catch (e) { onError(e.message); } }
+  async function complete() { try { await api(`/work-orders/${w.id}/complete`, { token, method: "POST" }); await load(); } catch (e) { onError(e.message); } }
+  async function closeWO() { try { await api(`/work-orders/${w.id}/close`, { token, method: "POST" }); await load(); } catch (e) { onError(e.message); } }
+  async function reopen() { try { await api(`/work-orders/${w.id}/reopen`, { token, method: "POST" }); await load(); } catch (e) { onError(e.message); } }
+
+  async function addNote() {
+    const text = note.trim();
+    if (!text) return;
+    try {
+      await api(`/work-orders/${w.id}/notes`, { token, method: "POST", body: { text } });
+      setNote("");
+      await load();
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  function openInstructions() {
+    if (!w.instruction_url) return;
+    window.open(`${API_BASE}${w.instruction_url}`, "_blank", "noopener,noreferrer");
+  }
+
+  function printWO() {
+    window.open(`${API_BASE}/work-orders/${w.id}/print?token=${encodeURIComponent(token)}`, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div style={styles.modalBackdrop} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div>
+            <h2 style={{ margin: 0 }}>{w.wo_number}</h2>
+            <div style={{ marginTop: 4, color: "#666", fontSize: 13 }}>
+              Station: <b>{w.station}</b> • Part: <b>{w.part_number}</b> • Status: <b>{w.status}</b>
+              {w.is_stock ? " • Stock Job" : w.customer_order ? ` • Customer: ${w.customer_order}` : ""}
+            </div>
+            <div style={{ marginTop: 4, color: "#666", fontSize: 12 }}>
+              Created: {new Date(w.created_at).toLocaleString()}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button style={styles.btn()} onClick={printWO}>Print</button>
+            {w.instruction_url ? (
+              <button style={styles.btn()} onClick={openInstructions}>Instructions</button>
+            ) : (
+              <button style={{ ...styles.btn(), opacity: 0.55 }} disabled>No Instructions</button>
+            )}
+            <button style={styles.btn("dark")} onClick={checkIn}>Check In</button>
+            <button style={styles.btn()} onClick={checkOut}>Check Out</button>
+            {canManage ? (
+              <>
+                <button style={styles.btn("green")} onClick={complete}>Complete</button>
+                <button style={styles.btn("dark")} onClick={closeWO}>Close</button>
+                <button style={styles.btn()} onClick={reopen}>Reopen</button>
+              </>
+            ) : null}
+            <button style={styles.btn()} onClick={onClose}>Close</button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 14 }}>
+          <div style={{ border: "1px solid #ececf6", borderRadius: 16, padding: 12, background: "#fbfbfe" }}>
+            <h3 style={{ marginTop: 0 }}>Current Workers (Fingerprint)</h3>
+            {data.current_workers.length ? (
+              data.current_workers.map((cw) => (
+                <div key={`${cw.user_id}-${cw.started_at}`} style={{ padding: "8px 0", borderBottom: "1px solid #ececf6" }}>
+                  <div style={{ fontWeight: 900 }}>{cw.name} <span style={{ color: "#666", fontWeight: 700 }}>({cw.role})</span></div>
+                  <div style={{ color: "#666", fontSize: 12 }}>Checked in: {new Date(cw.started_at).toLocaleString()}</div>
+                </div>
+              ))
+            ) : (
+              <div style={{ color: "#666" }}>No one currently checked in.</div>
+            )}
+
+            <h4 style={{ marginBottom: 6, marginTop: 14 }}>History</h4>
+            <div style={{ maxHeight: 220, overflow: "auto" }}>
+              {data.worker_history.length ? (
+                data.worker_history.map((h) => (
+                  <div key={h.id} style={{ padding: "8px 0", borderBottom: "1px solid #ececf6" }}>
+                    <div style={{ fontWeight: 900 }}>{h.name} <span style={{ color: "#666", fontWeight: 700 }}>({h.role})</span></div>
+                    <div style={{ color: "#666", fontSize: 12 }}>
+                      IN: {new Date(h.started_at).toLocaleString()} • OUT: {h.ended_at ? new Date(h.ended_at).toLocaleString() : "(still in)"}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "#666" }}>No history yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ border: "1px solid #ececf6", borderRadius: 16, padding: 12, background: "#fbfbfe" }}>
+            <h3 style={{ marginTop: 0 }}>Notes</h3>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ ...styles.input, width: "100%" }}
+                placeholder="Add a note…"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+              />
+              <button style={styles.btn("green")} onClick={addNote}>Add</button>
+            </div>
+
+            <div style={{ marginTop: 10, maxHeight: 360, overflow: "auto" }}>
+              {data.notes.length ? (
+                data.notes.map((n) => (
+                  <div key={n.id} style={{ padding: 10, borderRadius: 14, background: "white", border: "1px solid #ececf6", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 900 }}>{n.author_name}</div>
+                      <div style={{ color: "#666", fontSize: 12 }}>{new Date(n.created_at).toLocaleString()}</div>
+                    </div>
+                    <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{n.text}</div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "#666" }}>No notes yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkOrdersPage({ token, user, onError }) {
   const [wos, setWos] = React.useState([]);
   const [q, setQ] = React.useState("");
+  const [openId, setOpenId] = React.useState(null);
 
   const canManage = user?.role === "admin" || user?.role === "supervisor";
 
@@ -128,6 +285,8 @@ function WorkOrdersPage({ token, user, onError }) {
   async function complete(id) { try { await api(`/work-orders/${id}/complete`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
   async function close(id) { try { await api(`/work-orders/${id}/close`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
   async function reopen(id) { try { await api(`/work-orders/${id}/reopen`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
+
+  // use worker endpoints (and backend also supports legacy just in case)
   async function checkIn(id) { try { await api(`/work-orders/${id}/workers/check-in`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
   async function checkOut(id) { try { await api(`/work-orders/${id}/workers/check-out`, { token, method: "POST" }); refresh(); } catch (e) { onError(e.message); } }
 
@@ -143,12 +302,10 @@ function WorkOrdersPage({ token, user, onError }) {
 
   function openInstructions(w) {
     if (!w.instruction_url) return;
-    // open file in new tab
     window.open(`${API_BASE}${w.instruction_url}`, "_blank", "noopener,noreferrer");
   }
 
   function printWO(w) {
-    // print uses token query param
     window.open(`${API_BASE}/work-orders/${w.id}/print?token=${encodeURIComponent(token)}`, "_blank", "noopener,noreferrer");
   }
 
@@ -204,6 +361,7 @@ function WorkOrdersPage({ token, user, onError }) {
                 </td>
                 <td style={styles.td}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <button style={styles.btn("dark")} onClick={() => setOpenId(w.id)}>Open</button>
                     {w.instruction_url ? (
                       <button style={styles.btn()} onClick={() => openInstructions(w)}>Instructions</button>
                     ) : (
@@ -232,11 +390,15 @@ function WorkOrdersPage({ token, user, onError }) {
           </tbody>
         </table>
       </div>
+
+      {openId ? (
+        <WorkOrderModal token={token} user={user} woId={openId} onClose={() => setOpenId(null)} onError={onError} />
+      ) : null}
     </div>
   );
 }
 
-function CreateWOPage({ token, user, onError }) {
+function CreateWOPage({ token, onError }) {
   const [station, setStation] = React.useState("");
   const [parts, setParts] = React.useState([]);
   const [partId, setPartId] = React.useState("");
@@ -260,20 +422,13 @@ function CreateWOPage({ token, user, onError }) {
   async function submit() {
     setBusy(true);
     try {
-      const body = {
-        station: station.trim(),
-        is_stock: !!isStock,
-      };
+      const body = { station: station.trim(), is_stock: !!isStock };
       if (partId) body.part_id = Number(partId);
       else body.part_number = (partNumber || "").trim();
       if (!isStock) body.customer_order = (customerOrder || "").trim() || null;
 
       await api("/work-orders", { token, method: "POST", body });
-      setStation("");
-      setPartId("");
-      setPartNumber("");
-      setCustomerOrder("");
-      setIsStock(false);
+      setStation(""); setPartId(""); setPartNumber(""); setCustomerOrder(""); setIsStock(false);
       alert("Work order created!");
     } catch (e) {
       onError(e.message);
@@ -287,31 +442,15 @@ function CreateWOPage({ token, user, onError }) {
       <h2 style={{ marginTop: 0 }}>Create Work Order</h2>
       <div style={styles.row}>
         <input style={styles.input} placeholder="Station (e.g. Electrical)" value={station} onChange={(e) => setStation(e.target.value)} />
-        <select style={styles.select} value={partId} onChange={(e) => { setPartId(e.target.value); }}>
-          <option value="">Select Part by ID (optional)</option>
-          {parts.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.part_number} (ID {p.id})
-            </option>
-          ))}
+        <select style={styles.select} value={partId} onChange={(e) => setPartId(e.target.value)}>
+          <option value="">Select Part by ID (recommended)</option>
+          {parts.map((p) => <option key={p.id} value={p.id}>{p.part_number} (ID {p.id})</option>)}
         </select>
-        <input
-          style={styles.input}
-          placeholder="Or type Part Number"
-          value={partNumber}
-          onChange={(e) => setPartNumber(e.target.value)}
-          disabled={!!partId}
-        />
+        <input style={styles.input} placeholder="Or type Part Number" value={partNumber} onChange={(e) => setPartNumber(e.target.value)} disabled={!!partId} />
       </div>
 
       <div style={{ ...styles.row, marginTop: 10 }}>
-        <input
-          style={styles.input}
-          placeholder="Customer Order"
-          value={customerOrder}
-          onChange={(e) => setCustomerOrder(e.target.value)}
-          disabled={isStock}
-        />
+        <input style={styles.input} placeholder="Customer Order" value={customerOrder} onChange={(e) => setCustomerOrder(e.target.value)} disabled={isStock} />
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}>
           <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
           Stock Job
@@ -319,10 +458,6 @@ function CreateWOPage({ token, user, onError }) {
         <button style={styles.btn("green")} onClick={submit} disabled={busy || !station.trim() || (!partId && !partNumber.trim())}>
           {busy ? "Creating..." : "Create Work Order"}
         </button>
-      </div>
-
-      <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-        Tip: choose a Part from the dropdown for best consistency. If it’s a Stock Job, Customer Order will be blank.
       </div>
     </div>
   );
@@ -335,6 +470,8 @@ function PartsPage({ token, user, onError }) {
   const [desc, setDesc] = React.useState("");
   const [file, setFile] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+
+  const [replaceFileMap, setReplaceFileMap] = React.useState({}); // {partId: File}
 
   async function refresh() {
     try {
@@ -363,6 +500,21 @@ function PartsPage({ token, user, onError }) {
       onError(e.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function replaceInstructions(partId) {
+    const f = replaceFileMap[partId];
+    if (!f) return;
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      await api(`/parts/${partId}/upload`, { token, method: "POST", body: fd, isForm: true });
+      setReplaceFileMap((m) => ({ ...m, [partId]: null }));
+      await refresh();
+      alert("Instructions uploaded!");
+    } catch (e) {
+      onError(e.message);
     }
   }
 
@@ -404,16 +556,40 @@ function PartsPage({ token, user, onError }) {
           <tbody>
             {parts.map((p) => (
               <tr key={p.id} style={styles.trCard}>
-                <td style={styles.td}><div style={{ fontWeight: 900 }}>{p.part_number}</div><div style={{ fontSize: 12, color: "#666" }}>ID {p.id}</div></td>
+                <td style={styles.td}>
+                  <div style={{ fontWeight: 900 }}>{p.part_number}</div>
+                  <div style={{ fontSize: 12, color: "#666" }}>ID {p.id}</div>
+                </td>
                 <td style={styles.td}>{p.description || <span style={{ color: "#aaa" }}>—</span>}</td>
                 <td style={styles.td}>{p.has_file ? (p.filename || "file") : <span style={{ color: "#aaa" }}>none</span>}</td>
                 <td style={styles.td}><span style={styles.pill("#eef2ff", "#3b49df")}>{p.qty_on_hand || 0}</span></td>
                 <td style={styles.td}>
-                  {p.has_file ? (
-                    <button style={styles.btn()} onClick={() => openFile(p)}>Open Instructions</button>
-                  ) : (
-                    <button style={{ ...styles.btn(), opacity: 0.55 }} disabled>No File</button>
-                  )}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                    {p.has_file ? (
+                      <button style={styles.btn()} onClick={() => openFile(p)}>Open Instructions</button>
+                    ) : (
+                      <button style={{ ...styles.btn(), opacity: 0.55 }} disabled>No File</button>
+                    )}
+
+                    {canManage ? (
+                      <>
+                        <input
+                          type="file"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0] || null;
+                            setReplaceFileMap((m) => ({ ...m, [p.id]: f }));
+                          }}
+                        />
+                        <button
+                          style={styles.btn("dark")}
+                          onClick={() => replaceInstructions(p.id)}
+                          disabled={!replaceFileMap[p.id]}
+                        >
+                          Upload / Replace
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -521,7 +697,7 @@ function InventoryPage({ token, user, onError }) {
                   <tr key={t.id} style={styles.trCard}>
                     <td style={styles.td}>{new Date(t.created_at).toLocaleString()}</td>
                     <td style={styles.td}><span style={styles.pill("#f0f0f0", "#222")}>{t.txn_type}</span></td>
-                    <td style={styles.td} style={{ ...styles.td, fontWeight: 900 }}>{t.qty_delta}</td>
+                    <td style={{ ...styles.td, fontWeight: 900 }}>{t.qty_delta}</td>
                     <td style={styles.td}>{t.note || <span style={{ color: "#aaa" }}>—</span>}</td>
                   </tr>
                 ))}
@@ -569,36 +745,23 @@ function AdminPage({ token, user, onError }) {
 
   async function doReset() {
     try {
-      await api("/admin/reset-pin", {
-        token,
+      const res = await fetch(`${API_BASE}/admin/reset-pin`, {
         method: "POST",
-        body: { name: resetName, new_pin: newPin },
-        // RESET_TOKEN is sent as header:
-        // We can’t set custom headers in the simple api() without extending; do it manually here:
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "x-reset-token": resetToken,
+        },
+        body: JSON.stringify({ name: resetName, new_pin: newPin }),
       });
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+      if (!res.ok) throw new Error((data && data.detail) ? data.detail : `HTTP ${res.status}`);
+      alert("PIN reset!");
     } catch (e) {
-      // fallback manual call with header
-      try {
-        const res = await fetch(`${API_BASE}/admin/reset-pin`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-            "x-reset-token": resetToken,
-          },
-          body: JSON.stringify({ name: resetName, new_pin: newPin }),
-        });
-        const text = await res.text();
-        let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-        if (!res.ok) throw new Error((data && data.detail) ? data.detail : `HTTP ${res.status}`);
-        alert("PIN reset!");
-      } catch (e2) {
-        onError(e2.message);
-      }
-      return;
+      onError(e.message);
     }
-    alert("PIN reset!");
   }
 
   return (
@@ -654,17 +817,14 @@ function AdminPage({ token, user, onError }) {
 }
 
 function App() {
-  const [session, setSession] = React.useState(null); // {token,name,role}
+  const [session, setSession] = React.useState(null);
   const [tab, setTab] = React.useState("work_orders");
   const [error, setError] = React.useState("");
 
   const user = session ? { name: session.name, role: session.role } : null;
 
   function onLogin(resp, err) {
-    if (!resp) {
-      setError(err || "Login failed");
-      return;
-    }
+    if (!resp) { setError(err || "Login failed"); return; }
     setSession(resp);
     setError("");
     setTab("work_orders");
@@ -718,7 +878,7 @@ function App() {
         ) : (
           <>
             {tab === "work_orders" && <WorkOrdersPage token={session.token} user={user} onError={setError} />}
-            {tab === "create_wo" && <CreateWOPage token={session.token} user={user} onError={setError} />}
+            {tab === "create_wo" && <CreateWOPage token={session.token} onError={setError} />}
             {tab === "inventory" && <InventoryPage token={session.token} user={user} onError={setError} />}
             {tab === "parts" && <PartsPage token={session.token} user={user} onError={setError} />}
             {tab === "admin" && <AdminPage token={session.token} user={user} onError={setError} />}
