@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean,
-    DateTime, ForeignKey, Text
+    DateTime, ForeignKey, Text, LargeBinary
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
 
@@ -33,19 +33,13 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./dev.db"
 
-# Render Postgres URLs often start with postgres://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "168"))  # 7 days
-
 RESET_TOKEN = os.getenv("RESET_TOKEN", "change-me")
-
-# Upload directory (Render ephemeral OK; if you add a Render Disk, point UPLOAD_DIR there)
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_ORIGINS = [
     "https://trr-assembly-work-orders.onrender.com",
@@ -92,7 +86,6 @@ async def preflight(path: str, request: Request):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    # Keep CORS headers on 500 so browser doesn't show "CORS blocked"
     origin = request.headers.get("origin")
     headers = {}
     if origin in ALLOWED_ORIGINS:
@@ -142,14 +135,25 @@ class Part(Base):
     part_number = Column(String(120), unique=True, nullable=False)
     description = Column(String(255), nullable=True)
 
-    filename = Column(String, nullable=True)
-    file_path = Column(String, nullable=True)
-    uploaded_at = Column(DateTime, nullable=True)
-
     qty_on_hand = Column(Integer, default=0)
     inventory_updated_at = Column(DateTime, nullable=True)
-
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PartFile(Base):
+    """
+    Stores instruction file in DB so it survives Render redeploy/restart.
+    """
+    __tablename__ = "part_files"
+    id = Column(Integer, primary_key=True)
+    part_id = Column(Integer, ForeignKey("parts.id"), unique=True, nullable=False)
+
+    filename = Column(String(255), nullable=False)
+    mime_type = Column(String(120), nullable=False, default="application/pdf")
+    content = Column(LargeBinary, nullable=False)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    part = relationship("Part")
 
 
 class WorkOrder(Base):
@@ -431,27 +435,26 @@ def update_user(user_id: int, req: UpdateUserRequest, _: User = Depends(require_
 # -----------------------------
 # Parts
 # -----------------------------
-def _file_response_for_part(p: Part):
-    if not p.file_path or not os.path.exists(p.file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(p.file_path, filename=p.filename or "instructions.pdf")
-
 @app.get("/parts", response_model=List[PartOut])
 def list_parts(_: User = Depends(get_current_user), s: Session = Depends(get_db)):
     parts = s.query(Part).order_by(Part.part_number.asc()).all()
-    return [
-        PartOut(
-            id=p.id,
-            part_number=p.part_number,
-            description=p.description,
-            has_file=bool(p.file_path),
-            filename=p.filename,
-            uploaded_at=p.uploaded_at,
-            qty_on_hand=p.qty_on_hand or 0,
-            inventory_updated_at=p.inventory_updated_at,
+    files = {pf.part_id: pf for pf in s.query(PartFile).all()}
+    out = []
+    for p in parts:
+        pf = files.get(p.id)
+        out.append(
+            PartOut(
+                id=p.id,
+                part_number=p.part_number,
+                description=p.description,
+                has_file=bool(pf),
+                filename=(pf.filename if pf else None),
+                uploaded_at=(pf.uploaded_at if pf else None),
+                qty_on_hand=p.qty_on_hand or 0,
+                inventory_updated_at=p.inventory_updated_at,
+            )
         )
-        for p in parts
-    ]
+    return out
 
 @app.post("/parts", response_model=PartOut)
 def create_part(
@@ -470,38 +473,33 @@ def create_part(
         raise HTTPException(status_code=400, detail="Part already exists")
 
     p = Part(part_number=pn, description=(description or None), created_at=datetime.utcnow())
-
-    # Optional upload
-    if file is not None:
-        safe_name = file.filename or f"{pn}.pdf"
-        stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        stored_name = f"{pn}_{stamp}_{safe_name}"
-        path = os.path.join(UPLOAD_DIR, stored_name)
-
-        try:
-            with open(path, "wb") as f:
-                f.write(file.file.read())
-        finally:
-            try:
-                file.file.close()
-            except Exception:
-                pass
-
-        p.filename = safe_name
-        p.file_path = path
-        p.uploaded_at = datetime.utcnow()
-
     s.add(p)
     s.commit()
     s.refresh(p)
 
+    if file is not None:
+        content = file.file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        pf = PartFile(
+            part_id=p.id,
+            filename=file.filename or f"{pn}.pdf",
+            mime_type=file.content_type or "application/pdf",
+            content=content,
+            uploaded_at=datetime.utcnow(),
+        )
+        s.add(pf)
+        s.commit()
+
+    pf = s.query(PartFile).filter(PartFile.part_id == p.id).first()
     return PartOut(
         id=p.id,
         part_number=p.part_number,
         description=p.description,
-        has_file=bool(p.file_path),
-        filename=p.filename,
-        uploaded_at=p.uploaded_at,
+        has_file=bool(pf),
+        filename=(pf.filename if pf else None),
+        uploaded_at=(pf.uploaded_at if pf else None),
         qty_on_hand=p.qty_on_hand or 0,
         inventory_updated_at=p.inventory_updated_at,
     )
@@ -517,27 +515,29 @@ def upload_part_file(
     if not p:
         raise HTTPException(status_code=404, detail="Part not found")
 
-    safe_name = file.filename or f"{p.part_number}.pdf"
-    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    stored_name = f"{p.part_number}_{stamp}_{safe_name}"
-    path = os.path.join(UPLOAD_DIR, stored_name)
+    content = file.file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
 
-    try:
-        with open(path, "wb") as f:
-            f.write(file.file.read())
-    finally:
-        try:
-            file.file.close()
-        except Exception:
-            pass
+    existing = s.query(PartFile).filter(PartFile.part_id == part_id).first()
+    if existing:
+        existing.filename = file.filename or existing.filename
+        existing.mime_type = file.content_type or existing.mime_type
+        existing.content = content
+        existing.uploaded_at = datetime.utcnow()
+    else:
+        pf = PartFile(
+            part_id=part_id,
+            filename=file.filename or f"{p.part_number}.pdf",
+            mime_type=file.content_type or "application/pdf",
+            content=content,
+            uploaded_at=datetime.utcnow(),
+        )
+        s.add(pf)
 
-    p.filename = safe_name
-    p.file_path = path
-    p.uploaded_at = datetime.utcnow()
     s.commit()
     return OkResponse()
 
-# IMPORTANT: token allowed via query string so opening a new tab works
 @app.get("/parts/{part_id}/file")
 def get_part_file(
     part_id: int,
@@ -553,30 +553,12 @@ def get_part_file(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    p = s.query(Part).filter(Part.id == part_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Part not found")
-    return _file_response_for_part(p)
+    pf = s.query(PartFile).filter(PartFile.part_id == part_id).first()
+    if not pf:
+        raise HTTPException(status_code=404, detail="File not found")
 
-@app.get("/parts/{part_id}/download")
-def download_part_file(
-    part_id: int,
-    token: Optional[str] = None,
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(auth_scheme),
-    s: Session = Depends(get_db),
-):
-    jwt_token = token or (creds.credentials if creds else None)
-    if not jwt_token:
-        raise HTTPException(status_code=401, detail="Missing token")
-    try:
-        decode_token(jwt_token)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    p = s.query(Part).filter(Part.id == part_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Part not found")
-    return _file_response_for_part(p)
+    headers = {"Content-Disposition": f'inline; filename="{pf.filename}"'}
+    return Response(content=pf.content, media_type=pf.mime_type, headers=headers)
 
 
 # -----------------------------
@@ -731,64 +713,6 @@ def create_work_order(req: CreateWORequest, _: User = Depends(get_current_user),
         instruction_url=(f"/parts/{w.part_id}/file" if w.part_id else None),
     )
 
-@app.get("/work-orders/{wo_id}", response_model=WOOut)
-def get_work_order(wo_id: int, _: User = Depends(get_current_user), s: Session = Depends(get_db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    return WOOut(
-        id=w.id,
-        wo_number=w.wo_number,
-        station=w.station,
-        part_number=w.part_number,
-        part_id=w.part_id,
-        customer_order=w.customer_order,
-        is_stock=w.is_stock,
-        status=w.status,
-        created_at=w.created_at,
-        instruction_url=(f"/parts/{w.part_id}/file" if w.part_id else None),
-    )
-
-@app.patch("/work-orders/{wo_id}", response_model=OkResponse)
-def update_work_order(
-    wo_id: int,
-    payload: dict = Body(...),
-    _: User = Depends(require_role("admin", "supervisor")),
-    s: Session = Depends(get_db),
-):
-    wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not wo:
-        raise HTTPException(status_code=404, detail="Work order not found")
-
-    if "station" in payload and payload["station"] is not None:
-        wo.station = str(payload["station"]).strip()
-
-    if "part_id" in payload and payload["part_id"] is not None:
-        pid = int(payload["part_id"])
-        p = s.query(Part).filter(Part.id == pid).first()
-        if not p:
-            raise HTTPException(status_code=400, detail="Invalid part_id")
-        wo.part_id = pid
-        wo.part_number = p.part_number
-
-    if "part_number" in payload and payload["part_number"] is not None and not payload.get("part_id"):
-        wo.part_number = str(payload["part_number"]).strip()
-
-    if "is_stock" in payload and payload["is_stock"] is not None:
-        wo.is_stock = bool(payload["is_stock"])
-
-    if "customer_order" in payload:
-        wo.customer_order = payload["customer_order"] or None
-
-    if "status" in payload and payload["status"] is not None:
-        new_status = str(payload["status"]).lower()
-        if new_status not in {"open", "in_progress", "complete", "closed"}:
-            raise HTTPException(status_code=400, detail=f"Invalid status '{new_status}'")
-        wo.status = new_status
-
-    s.commit()
-    return OkResponse()
-
 @app.post("/work-orders/{wo_id}/complete", response_model=OkResponse)
 def wo_complete(wo_id: int, _: User = Depends(require_role("admin", "supervisor")), s: Session = Depends(get_db)):
     wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
@@ -799,19 +723,48 @@ def wo_complete(wo_id: int, _: User = Depends(require_role("admin", "supervisor"
     return OkResponse()
 
 @app.post("/work-orders/{wo_id}/close", response_model=OkResponse)
-def wo_close(wo_id: int, _: User = Depends(require_role("admin", "supervisor")), s: Session = Depends(get_db)):
+def wo_close(wo_id: int, u: User = Depends(require_role("admin", "supervisor")), s: Session = Depends(get_db)):
     wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+
+    # Only apply stock inventory adjustment if transitioning to closed
+    if wo.status != "closed" and wo.is_stock and wo.part_id:
+        p = s.query(Part).filter(Part.id == wo.part_id).first()
+        if p:
+            new_qty = int(p.qty_on_hand or 0) - 1
+            if new_qty < 0:
+                raise HTTPException(status_code=400, detail="Not enough inventory on hand to close stock job")
+            p.qty_on_hand = new_qty
+            p.inventory_updated_at = datetime.utcnow()
+            record_inventory_txn(
+                s, p, "issue", -1,
+                f"Stock WO close {wo.wo_number}",
+                u.id
+            )
+
     wo.status = "closed"
     s.commit()
     return OkResponse()
 
 @app.post("/work-orders/{wo_id}/reopen", response_model=OkResponse)
-def wo_reopen(wo_id: int, _: User = Depends(require_role("admin", "supervisor")), s: Session = Depends(get_db)):
+def wo_reopen(wo_id: int, u: User = Depends(require_role("admin", "supervisor")), s: Session = Depends(get_db)):
     wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
+
+    # If reopening a closed stock job, add inventory back
+    if wo.status == "closed" and wo.is_stock and wo.part_id:
+        p = s.query(Part).filter(Part.id == wo.part_id).first()
+        if p:
+            p.qty_on_hand = int(p.qty_on_hand or 0) + 1
+            p.inventory_updated_at = datetime.utcnow()
+            record_inventory_txn(
+                s, p, "receive", 1,
+                f"Stock WO reopen {wo.wo_number}",
+                u.id
+            )
+
     wo.status = "open"
     s.commit()
     return OkResponse()
@@ -821,7 +774,6 @@ def wo_delete(wo_id: int, _: User = Depends(require_role("admin", "supervisor"))
     wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
     if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
-    # delete children
     s.query(Note).filter(Note.work_order_id == wo_id).delete()
     s.query(WorkerSession).filter(WorkerSession.work_order_id == wo_id).delete()
     s.delete(wo)
@@ -834,9 +786,6 @@ def wo_delete(wo_id: int, _: User = Depends(require_role("admin", "supervisor"))
 # -----------------------------
 @app.get("/work-orders/{wo_id}/notes", response_model=List[NoteOut])
 def list_notes(wo_id: int, _: User = Depends(get_current_user), s: Session = Depends(get_db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
-        raise HTTPException(status_code=404, detail="Work order not found")
     notes = s.query(Note).filter(Note.work_order_id == wo_id).order_by(Note.created_at.asc()).all()
     return [
         NoteOut(
@@ -852,13 +801,13 @@ def list_notes(wo_id: int, _: User = Depends(get_current_user), s: Session = Dep
 
 @app.post("/work-orders/{wo_id}/notes", response_model=OkResponse)
 def add_note(wo_id: int, req: AddNoteRequest, u: User = Depends(get_current_user), s: Session = Depends(get_db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
+    wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
+    if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
     n = Note(
         work_order_id=wo_id,
         author_name=u.name,
-        station=w.station,
+        station=wo.station,
         text=req.text.strip(),
         created_at=datetime.utcnow(),
     )
@@ -912,31 +861,8 @@ def workers_history(wo_id: int, _: User = Depends(get_current_user), s: Session 
 
 @app.post("/work-orders/{wo_id}/workers/check-in", response_model=OkResponse)
 def worker_check_in(wo_id: int, u: User = Depends(get_current_user), s: Session = Depends(get_db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
-        raise HTTPException(status_code=404, detail="Work order not found")
-
-    existing_open = (
-        s.query(WorkerSession)
-        .filter(
-            WorkerSession.work_order_id == wo_id,
-            WorkerSession.user_id == u.id,
-            WorkerSession.ended_at.is_(None),
-        )
-        .first()
-    )
-    if existing_open:
-        return OkResponse()
-
-    sess = WorkerSession(work_order_id=wo_id, user_id=u.id, started_at=datetime.utcnow(), ended_at=None)
-    s.add(sess)
-    s.commit()
-    return OkResponse()
-
-@app.post("/work-orders/{wo_id}/workers/check-out", response_model=OkResponse)
-def worker_check_out(wo_id: int, u: User = Depends(get_current_user), s: Session = Depends(get_db)):
-    w = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
-    if not w:
+    wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
+    if not wo:
         raise HTTPException(status_code=404, detail="Work order not found")
 
     existing_open = (
@@ -949,9 +875,43 @@ def worker_check_out(wo_id: int, u: User = Depends(get_current_user), s: Session
         .first()
     )
     if not existing_open:
-        return OkResponse()
+        sess = WorkerSession(work_order_id=wo_id, user_id=u.id, started_at=datetime.utcnow(), ended_at=None)
+        s.add(sess)
 
-    existing_open.ended_at = datetime.utcnow()
+    # Make it visually obvious in UI
+    if wo.status == "open":
+        wo.status = "in_progress"
+
+    s.commit()
+    return OkResponse()
+
+@app.post("/work-orders/{wo_id}/workers/check-out", response_model=OkResponse)
+def worker_check_out(wo_id: int, u: User = Depends(get_current_user), s: Session = Depends(get_db)):
+    wo = s.query(WorkOrder).filter(WorkOrder.id == wo_id).first()
+    if not wo:
+        raise HTTPException(status_code=404, detail="Work order not found")
+
+    existing_open = (
+        s.query(WorkerSession)
+        .filter(
+            WorkerSession.work_order_id == wo_id,
+            WorkerSession.user_id == u.id,
+            WorkerSession.ended_at.is_(None),
+        )
+        .first()
+    )
+    if existing_open:
+        existing_open.ended_at = datetime.utcnow()
+
+    # If nobody is checked in anymore, return status to open (unless complete/closed)
+    remaining = (
+        s.query(WorkerSession)
+        .filter(WorkerSession.work_order_id == wo_id, WorkerSession.ended_at.is_(None))
+        .count()
+    )
+    if remaining == 0 and wo.status == "in_progress":
+        wo.status = "open"
+
     s.commit()
     return OkResponse()
 
@@ -1052,4 +1012,3 @@ def print_work_order_pdf(
     pdf = buf.getvalue()
     headers = {"Content-Disposition": f'inline; filename="{w.wo_number}.pdf"'}
     return Response(content=pdf, media_type="application/pdf", headers=headers)
-
