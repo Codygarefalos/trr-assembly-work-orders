@@ -1,12 +1,5 @@
 import React from "react";
 
-/**
- * TRR Assembly Work Orders - App.jsx
- * - Tabs: Work Orders, Create WO, Inventory, Parts, Admin, Logout
- * - Popout: opens WO detail view using hash route #/wo/:id
- * - Instructions/Print open in new tab using ?token=... so no "Missing token"
- */
-
 const API_BASE =
   (import.meta?.env?.VITE_API_BASE || "").trim() ||
   "https://trr-assembly-api.onrender.com";
@@ -47,8 +40,7 @@ async function api(path, { token, method = "GET", body, isForm = false } = {}) {
 function formatDT(s) {
   if (!s) return "";
   try {
-    const d = new Date(s);
-    return d.toLocaleString();
+    return new Date(s).toLocaleString();
   } catch {
     return String(s);
   }
@@ -56,13 +48,11 @@ function formatDT(s) {
 
 function useHashRoute() {
   const [hash, setHash] = React.useState(window.location.hash || "#/");
-
   React.useEffect(() => {
     const onHash = () => setHash(window.location.hash || "#/");
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
-
   const m = hash.match(/^#\/wo\/(\d+)/);
   return { route: m ? { name: "wo", id: Number(m[1]) } : { name: "home" } };
 }
@@ -110,7 +100,6 @@ function TopNav({ tab, setTab, user, onLogout }) {
           Logged in as <b>{user?.name}</b> ({user?.role}) • API: {API_BASE}
         </div>
       </div>
-
       <div className="tabs">
         {tabs.map((t) => (
           <button
@@ -193,7 +182,7 @@ function WorkOrdersPage({ token, user, onError }) {
       setWos(data || []);
       const map = {};
       await Promise.all(
-        (data || []).slice(0, 80).map(async (w) => {
+        (data || []).slice(0, 120).map(async (w) => {
           try {
             map[w.id] = await api(`/work-orders/${w.id}/workers`, { token });
           } catch {
@@ -215,31 +204,21 @@ function WorkOrdersPage({ token, user, onError }) {
   }, []);
 
   const filtered = wos.filter((w) => {
-    const t =
-      `${w.wo_number} ${w.station} ${w.part_number} ${w.customer_order || ""} ${w.status}`.toLowerCase();
+    const t = `${w.wo_number} ${w.station} ${w.part_number} ${w.customer_order || ""} ${w.status}`.toLowerCase();
     return t.includes(q.toLowerCase());
   });
 
   function openPopout(id) {
-    window.open(
-      `${window.location.origin}${window.location.pathname}#/wo/${id}`,
-      "_blank"
-    );
+    window.open(`${window.location.origin}${window.location.pathname}#/wo/${id}`, "_blank");
   }
 
   function openInstructions(w) {
     if (!w.part_id) return;
-    const url = `${API_BASE}/parts/${w.part_id}/file?token=${encodeURIComponent(
-      token
-    )}`;
-    window.open(url, "_blank");
+    window.open(`${API_BASE}/parts/${w.part_id}/file?token=${encodeURIComponent(token)}`, "_blank");
   }
 
   function openPrint(w) {
-    const url = `${API_BASE}/work-orders/${w.id}/print?token=${encodeURIComponent(
-      token
-    )}`;
-    window.open(url, "_blank");
+    window.open(`${API_BASE}/work-orders/${w.id}/print?token=${encodeURIComponent(token)}`, "_blank");
   }
 
   async function act(path, method = "POST") {
@@ -303,29 +282,15 @@ function WorkOrdersPage({ token, user, onError }) {
 
               <div>
                 <div className="part">{w.part_number || "-"}</div>
-                {w.part_id ? (
-                  <div className="muted">Part ID: {w.part_id}</div>
-                ) : null}
+                {w.part_id ? <div className="muted">Part ID: {w.part_id}</div> : null}
               </div>
 
               <div>
-                {w.is_stock ? (
-                  <Pill tone="green">Stock Job</Pill>
-                ) : (
-                  <span>{w.customer_order || ""}</span>
-                )}
+                {w.is_stock ? <Pill tone="green">Stock Job</Pill> : <span>{w.customer_order || ""}</span>}
               </div>
 
               <div>
-                <Pill
-                  tone={
-                    w.status === "closed"
-                      ? "gray"
-                      : w.status === "complete"
-                        ? "green"
-                        : "blue"
-                  }
-                >
+                <Pill tone={w.status === "closed" ? "gray" : w.status === "complete" ? "green" : "blue"}>
                   {w.status}
                 </Pill>
               </div>
@@ -344,23 +309,13 @@ function WorkOrdersPage({ token, user, onError }) {
                 <Button onClick={() => openPrint(w)}>Print</Button>
 
                 <Button
-                  onClick={() =>
-                    act(
-                      `/work-orders/${w.id}/workers/${
-                        meIn ? "check-out" : "check-in"
-                      }`,
-                      "POST"
-                    )
-                  }
+                  onClick={() => act(`/work-orders/${w.id}/workers/${meIn ? "check-out" : "check-in"}`, "POST")}
                   variant={meIn ? "default" : "primary"}
                 >
                   {meIn ? "Check Out" : "Check In"}
                 </Button>
 
-                <Button
-                  variant="primary"
-                  onClick={() => act(`/work-orders/${w.id}/complete`, "POST")}
-                >
+                <Button variant="primary" onClick={() => act(`/work-orders/${w.id}/complete`, "POST")}>
                   Complete
                 </Button>
 
@@ -372,7 +327,7 @@ function WorkOrdersPage({ token, user, onError }) {
                   Reopen
                 </Button>
 
-                {user?.role === "admin" || user?.role === "supervisor" ? (
+                {(user?.role === "admin" || user?.role === "supervisor") ? (
                   <Button variant="danger" onClick={() => delWO(w.id)}>
                     Delete
                   </Button>
@@ -421,15 +376,11 @@ function CreateWOPage({ token, parts, onCreated, onError }) {
   }
 
   return (
-    <Card title="Create Work Order" right={<Pill tone="green">Clean tab</Pill>}>
+    <Card title="Create Work Order">
       <form onSubmit={submit} className="form grid2">
         <label>
           Station
-          <input
-            value={station}
-            onChange={(e) => setStation(e.target.value)}
-            required
-          />
+          <input value={station} onChange={(e) => setStation(e.target.value)} required />
         </label>
 
         <label>
@@ -442,18 +393,12 @@ function CreateWOPage({ token, parts, onCreated, onError }) {
               </option>
             ))}
           </select>
-          <div className="muted">
-            If you don’t pick a part, you can type a part number below.
-          </div>
+          <div className="muted">Pick a part for instructions + stock tracking.</div>
         </label>
 
         <label>
           Part Number (manual)
-          <input
-            value={partNumber}
-            onChange={(e) => setPartNumber(e.target.value)}
-            placeholder="HAR-M100L-STD"
-          />
+          <input value={partNumber} onChange={(e) => setPartNumber(e.target.value)} placeholder="HAR-M100L-STD" />
         </label>
 
         <label>
@@ -467,11 +412,7 @@ function CreateWOPage({ token, parts, onCreated, onError }) {
         </label>
 
         <label className="row">
-          <input
-            type="checkbox"
-            checked={isStock}
-            onChange={(e) => setIsStock(e.target.checked)}
-          />
+          <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} />
           Stock Job
         </label>
 
@@ -484,7 +425,7 @@ function CreateWOPage({ token, parts, onCreated, onError }) {
   );
 }
 
-function PartsPage({ token, user, onError }) {
+function PartsPage({ token, user, onError, onPartsChanged }) {
   const [parts, setParts] = React.useState([]);
   const [q, setQ] = React.useState("");
   const [pn, setPn] = React.useState("");
@@ -494,7 +435,9 @@ function PartsPage({ token, user, onError }) {
 
   async function refresh() {
     try {
-      setParts(await api("/parts", { token }));
+      const p = await api("/parts", { token });
+      setParts(p || []);
+      onPartsChanged?.(p || []);
     } catch (e) {
       onError(e.message);
     }
@@ -535,12 +478,7 @@ function PartsPage({ token, user, onError }) {
     const fd = new FormData();
     fd.append("file", f);
     try {
-      await api(`/parts/${partId}/upload`, {
-        token,
-        method: "POST",
-        body: fd,
-        isForm: true,
-      });
+      await api(`/parts/${partId}/upload`, { token, method: "POST", body: fd, isForm: true });
       await refresh();
     } catch (e2) {
       onError(e2.message);
@@ -548,10 +486,7 @@ function PartsPage({ token, user, onError }) {
   }
 
   function openInstruction(partId) {
-    const url = `${API_BASE}/parts/${partId}/file?token=${encodeURIComponent(
-      token
-    )}`;
-    window.open(url, "_blank");
+    window.open(`${API_BASE}/parts/${partId}/file?token=${encodeURIComponent(token)}`, "_blank");
   }
 
   return (
@@ -559,22 +494,13 @@ function PartsPage({ token, user, onError }) {
       title="Parts"
       right={
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <input
-            className="search"
-            placeholder="Search parts..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
+          <input className="search" placeholder="Search parts..." value={q} onChange={(e) => setQ(e.target.value)} />
           <Button onClick={refresh}>Refresh</Button>
         </div>
       }
     >
       {canEdit ? (
-        <form
-          onSubmit={addPart}
-          className="form grid2"
-          style={{ marginBottom: 16 }}
-        >
+        <form onSubmit={addPart} className="form grid2" style={{ marginBottom: 16 }}>
           <label>
             Part Number
             <input value={pn} onChange={(e) => setPn(e.target.value)} required />
@@ -587,10 +513,7 @@ function PartsPage({ token, user, onError }) {
 
           <label>
             Instruction File (optional)
-            <input
-              type="file"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
+            <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </label>
 
           <div />
@@ -624,18 +547,11 @@ function PartsPage({ token, user, onError }) {
               <Pill tone="blue">{p.qty_on_hand || 0}</Pill>
             </div>
             <div>
-              {p.has_file ? (
-                <Button onClick={() => openInstruction(p.id)}>Open</Button>
-              ) : (
-                <Pill tone="gray">None</Pill>
-              )}
+              {p.has_file ? <Button onClick={() => openInstruction(p.id)}>Open</Button> : <Pill tone="gray">None</Pill>}
             </div>
             <div>
               {canEdit ? (
-                <input
-                  type="file"
-                  onChange={(e) => uploadTo(p.id, e.target.files?.[0] || null)}
-                />
+                <input type="file" onChange={(e) => uploadTo(p.id, e.target.files?.[0] || null)} />
               ) : (
                 <span className="muted">No access</span>
               )}
@@ -649,6 +565,7 @@ function PartsPage({ token, user, onError }) {
 
 function InventoryPage({ token, user, onError }) {
   const [parts, setParts] = React.useState([]);
+  const [q, setQ] = React.useState("");
   const [sel, setSel] = React.useState("");
   const [qty, setQty] = React.useState(1);
   const [note, setNote] = React.useState("");
@@ -700,11 +617,51 @@ function InventoryPage({ token, user, onError }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
 
+  const filtered = parts.filter((p) => {
+    const t = `${p.part_number} ${p.description || ""}`.toLowerCase();
+    return t.includes(q.toLowerCase());
+  });
+
   return (
-    <Card title="Inventory">
+    <Card
+      title="Inventory"
+      right={
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            className="search"
+            placeholder="Search parts list..."
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <Button onClick={refreshParts}>Refresh</Button>
+        </div>
+      }
+    >
+      {/* ✅ Full list of parts + qty */}
+      <div className="table" style={{ marginBottom: 16 }}>
+        <div className="tr th" style={{ gridTemplateColumns: "220px 1fr 120px" }}>
+          <div>Part</div>
+          <div>Description</div>
+          <div>Qty</div>
+        </div>
+        {filtered.map((p) => (
+          <div className="tr" key={p.id} style={{ gridTemplateColumns: "220px 1fr 120px" }}>
+            <div>
+              <div className="part">{p.part_number}</div>
+              <div className="muted">ID: {p.id}</div>
+            </div>
+            <div className="muted">{p.description || ""}</div>
+            <div>
+              <Pill tone="blue">{p.qty_on_hand || 0}</Pill>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Transactions panel */}
       <div className="form grid2">
         <label>
-          Part
+          Select Part to Adjust
           <select value={sel} onChange={(e) => setSel(e.target.value)}>
             <option value="">-- choose part --</option>
             {parts.map((p) => (
@@ -717,12 +674,7 @@ function InventoryPage({ token, user, onError }) {
 
         <label>
           Qty
-          <input
-            type="number"
-            value={qty}
-            min={1}
-            onChange={(e) => setQty(e.target.value)}
-          />
+          <input type="number" value={qty} min={1} onChange={(e) => setQty(e.target.value)} />
         </label>
 
         <label style={{ gridColumn: "1 / -1" }}>
@@ -737,23 +689,22 @@ function InventoryPage({ token, user, onError }) {
           <Button onClick={() => doTxn("issue")} disabled={!canManage || !sel}>
             Issue
           </Button>
-          <Button onClick={refreshParts}>Refresh</Button>
         </div>
       </div>
 
       <div style={{ marginTop: 16 }}>
         <div className="muted" style={{ marginBottom: 8 }}>
-          Latest transactions
+          Latest transactions (selected part)
         </div>
         <div className="table">
-          <div className="tr th">
+          <div className="tr th" style={{ gridTemplateColumns: "220px 120px 100px 1fr" }}>
             <div>When</div>
             <div>Type</div>
             <div>Δ</div>
             <div>Note</div>
           </div>
           {txns.map((t) => (
-            <div className="tr" key={t.id}>
+            <div className="tr" key={t.id} style={{ gridTemplateColumns: "220px 120px 100px 1fr" }}>
               <div>{formatDT(t.created_at)}</div>
               <div>{t.txn_type}</div>
               <div>
@@ -886,24 +837,18 @@ function AdminPage({ token, user, onError }) {
 
           <Card title="Users" right={<Button onClick={refresh}>Refresh</Button>}>
             <div className="table">
-              <div className="tr th">
+              <div className="tr th" style={{ gridTemplateColumns: "1fr 160px 160px" }}>
                 <div>Name</div>
                 <div>Role</div>
                 <div>Status</div>
               </div>
               {users.map((u) => (
-                <div className="tr" key={u.id}>
+                <div className="tr" key={u.id} style={{ gridTemplateColumns: "1fr 160px 160px" }}>
                   <div>
                     <b>{u.name}</b>
                   </div>
                   <div>{u.role}</div>
-                  <div>
-                    {u.is_active ? (
-                      <Pill tone="green">active</Pill>
-                    ) : (
-                      <Pill tone="gray">inactive</Pill>
-                    )}
-                  </div>
+                  <div>{u.is_active ? <Pill tone="green">active</Pill> : <Pill tone="gray">inactive</Pill>}</div>
                 </div>
               ))}
             </div>
@@ -938,27 +883,17 @@ function WorkOrderPopout({ token, user, woId, onError }) {
 
   function openInstructions() {
     if (!wo?.part_id) return;
-    window.open(
-      `${API_BASE}/parts/${wo.part_id}/file?token=${encodeURIComponent(token)}`,
-      "_blank"
-    );
+    window.open(`${API_BASE}/parts/${wo.part_id}/file?token=${encodeURIComponent(token)}`, "_blank");
   }
 
   function openPrint() {
-    window.open(
-      `${API_BASE}/work-orders/${woId}/print?token=${encodeURIComponent(token)}`,
-      "_blank"
-    );
+    window.open(`${API_BASE}/work-orders/${woId}/print?token=${encodeURIComponent(token)}`, "_blank");
   }
 
   async function addNote(e) {
     e.preventDefault();
     try {
-      await api(`/work-orders/${woId}/notes`, {
-        token,
-        method: "POST",
-        body: { text },
-      });
+      await api(`/work-orders/${woId}/notes`, { token, method: "POST", body: { text } });
       setText("");
       await refresh();
     } catch (e2) {
@@ -970,22 +905,14 @@ function WorkOrderPopout({ token, user, woId, onError }) {
     try {
       const current = await api(`/work-orders/${woId}/workers`, { token });
       const meIn = (current || []).some((x) => x.user_id === user?.id);
-      await api(
-        `/work-orders/${woId}/workers/${meIn ? "check-out" : "check-in"}`,
-        { token, method: "POST" }
-      );
+      await api(`/work-orders/${woId}/workers/${meIn ? "check-out" : "check-in"}`, { token, method: "POST" });
       await refresh();
     } catch (e) {
       onError(e.message);
     }
   }
 
-  if (!wo)
-    return (
-      <div className="center">
-        <div className="muted">Loading…</div>
-      </div>
-    );
+  if (!wo) return <div className="center"><div className="muted">Loading…</div></div>;
 
   return (
     <div className="pop">
@@ -993,20 +920,15 @@ function WorkOrderPopout({ token, user, woId, onError }) {
         <div>
           <div className="brand">{wo.wo_number}</div>
           <div className="sub">
-            {wo.station} • {wo.part_number} •{" "}
-            {wo.is_stock ? "Stock Job" : wo.customer_order || ""} •{" "}
+            {wo.station} • {wo.part_number} • {wo.is_stock ? "Stock Job" : (wo.customer_order || "")} •{" "}
             <b>{wo.status}</b>
           </div>
         </div>
         <div className="tabs">
           <Button onClick={refresh}>Refresh</Button>
           <Button onClick={openPrint}>Print</Button>
-          <Button onClick={checkInOut} variant="primary">
-            Check In/Out
-          </Button>
-          <Button onClick={openInstructions} disabled={!wo.part_id}>
-            Instructions
-          </Button>
+          <Button onClick={checkInOut} variant="primary">Check In/Out</Button>
+          <Button onClick={openInstructions} disabled={!wo.part_id}>Instructions</Button>
           <Button onClick={() => (window.location.hash = "#/")}>Back</Button>
         </div>
       </div>
@@ -1014,24 +936,18 @@ function WorkOrderPopout({ token, user, woId, onError }) {
       <div className="grid2">
         <Card title="Fingerprint (History)">
           <div className="table">
-            <div className="tr th">
+            <div className="tr th" style={{ gridTemplateColumns: "1fr 140px 220px 220px" }}>
               <div>Name</div>
               <div>Role</div>
               <div>In</div>
               <div>Out</div>
             </div>
             {history.map((h, idx) => (
-              <div className="tr" key={idx}>
+              <div className="tr" key={idx} style={{ gridTemplateColumns: "1fr 140px 220px 220px" }}>
                 <div>{h.name}</div>
                 <div className="muted">{h.role}</div>
                 <div>{formatDT(h.started_at)}</div>
-                <div>
-                  {h.ended_at ? (
-                    formatDT(h.ended_at)
-                  ) : (
-                    <Pill tone="green">checked in</Pill>
-                  )}
-                </div>
+                <div>{h.ended_at ? formatDT(h.ended_at) : <Pill tone="green">checked in</Pill>}</div>
               </div>
             ))}
           </div>
@@ -1041,23 +957,15 @@ function WorkOrderPopout({ token, user, woId, onError }) {
           <form onSubmit={addNote} className="form">
             <label>
               Add a note
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                rows={4}
-              />
+              <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} />
             </label>
-            <Button variant="primary" type="submit">
-              Add Note
-            </Button>
+            <Button variant="primary" type="submit">Add Note</Button>
           </form>
 
           <div style={{ marginTop: 12 }}>
             {notes.map((n) => (
               <div key={n.id} className="note">
-                <div className="muted">
-                  {formatDT(n.created_at)} • <b>{n.author_name}</b>
-                </div>
+                <div className="muted">{formatDT(n.created_at)} • <b>{n.author_name}</b></div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{n.text}</div>
               </div>
             ))}
@@ -1071,9 +979,7 @@ function WorkOrderPopout({ token, user, woId, onError }) {
 export default function App() {
   const { route } = useHashRoute();
 
-  const [token, setToken] = React.useState(
-    localStorage.getItem("trr_token") || ""
-  );
+  const [token, setToken] = React.useState(localStorage.getItem("trr_token") || "");
   const [user, setUser] = React.useState(() => {
     try {
       return JSON.parse(localStorage.getItem("trr_user") || "null");
@@ -1108,7 +1014,9 @@ export default function App() {
   async function onLoggedIn(r) {
     setToken(r.token);
     localStorage.setItem("trr_token", r.token);
-    const u = { name: r.name, role: r.role };
+
+    // ✅ FIX: store user id so check-out works
+    const u = { id: r.user_id, name: r.name, role: r.role };
     setUser(u);
     localStorage.setItem("trr_user", JSON.stringify(u));
     setBanner("");
@@ -1137,19 +1045,11 @@ export default function App() {
         <Style />
         {banner ? (
           <div className="banner error">
-            <b>Internal Server Error</b>
-            <span style={{ marginLeft: 10 }}>{banner}</span>
-            <button className="x" onClick={() => setBanner("")}>
-              x
-            </button>
+            <b>Error</b> <span style={{ marginLeft: 10 }}>{banner}</span>
+            <button className="x" onClick={() => setBanner("")}>x</button>
           </div>
         ) : null}
-        <WorkOrderPopout
-          token={token}
-          user={user}
-          woId={route.id}
-          onError={onError}
-        />
+        <WorkOrderPopout token={token} user={user} woId={route.id} onError={onError} />
       </>
     );
   }
@@ -1158,41 +1058,24 @@ export default function App() {
     <>
       <Style />
       <TopNav tab={tab} setTab={setTab} user={user} onLogout={logout} />
+
       {banner ? (
         <div className="banner error">
-          <b>Internal Server Error</b>
-          <span style={{ marginLeft: 10 }}>{banner}</span>
-          <button className="x" onClick={() => setBanner("")}>
-            x
-          </button>
+          <b>Error</b> <span style={{ marginLeft: 10 }}>{banner}</span>
+          <button className="x" onClick={() => setBanner("")}>x</button>
         </div>
       ) : null}
 
       <div className="wrap">
-        {tab === "Work Orders" ? (
-          <WorkOrdersPage token={token} user={user} onError={onError} />
-        ) : null}
-
+        {tab === "Work Orders" ? <WorkOrdersPage token={token} user={user} onError={onError} /> : null}
         {tab === "Create WO" ? (
-          <CreateWOPage
-            token={token}
-            parts={parts}
-            onCreated={() => setTab("Work Orders")}
-            onError={onError}
-          />
+          <CreateWOPage token={token} parts={parts} onCreated={() => setTab("Work Orders")} onError={onError} />
         ) : null}
-
-        {tab === "Inventory" ? (
-          <InventoryPage token={token} user={user} onError={onError} />
-        ) : null}
-
+        {tab === "Inventory" ? <InventoryPage token={token} user={user} onError={onError} /> : null}
         {tab === "Parts" ? (
-          <PartsPage token={token} user={user} onError={onError} />
+          <PartsPage token={token} user={user} onError={onError} onPartsChanged={(p) => setParts(p)} />
         ) : null}
-
-        {tab === "Admin" ? (
-          <AdminPage token={token} user={user} onError={onError} />
-        ) : null}
+        {tab === "Admin" ? <AdminPage token={token} user={user} onError={onError} /> : null}
       </div>
     </>
   );
@@ -1225,7 +1108,6 @@ function Style() {
         cursor:pointer; font-weight: 700;
       }
       .tab-active { background:#111; color:#fff; border-color:#111; }
-
       .banner {
         max-width: 1220px; margin: 12px auto 0; padding: 14px 18px;
         border-radius: 14px; border: 1px solid #f2b7b7; background: #ffecec; color:#7a1111;
@@ -1235,31 +1117,26 @@ function Style() {
         border: 0; background:#fff; border: 1px solid #f2b7b7; border-radius: 10px; width: 32px; height: 32px;
         cursor:pointer; font-weight: 900;
       }
-
       .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
       .card-h { display:flex; align-items:center; justify-content:space-between; padding: 16px 16px 0; }
       .card-title { font-size: 18px; font-weight: 900; }
       .card-b { padding: 16px; }
-
       .search { width: 360px; max-width: 48vw; padding: 10px 12px; border-radius: 12px; border:1px solid var(--line); }
-
-      .btn {
-        border: 1px solid var(--line); background:#fff; padding: 10px 12px; border-radius: 12px;
-        cursor:pointer; font-weight: 800;
-      }
+      .btn { border: 1px solid var(--line); background:#fff; padding: 10px 12px; border-radius: 12px; cursor:pointer; font-weight: 800; }
       .btn:hover { filter: brightness(.98); }
       .btn-primary { background:#0f6; border-color:#0f6; color:#063; }
       .btn-danger { background:#e11d48; border-color:#e11d48; color:#fff; }
       .btn-ghost { background:#f3f4f6; }
-
       .pill { padding: 4px 10px; border-radius: 999px; font-weight: 900; font-size: 12px; border:1px solid var(--line); }
       .pill-gray { background:#f3f4f6; color:#374151; }
       .pill-blue { background:#eef2ff; color:#3730a3; border-color:#c7d2fe; }
       .pill-green { background:#ecfdf5; color:#065f46; border-color:#a7f3d0; }
       .pill-red { background:#fff1f2; color:#9f1239; border-color:#fecdd3; }
-
       .table { display:flex; flex-direction:column; gap: 10px; }
-      .tr { display:grid; grid-template-columns: 140px 120px 220px 140px 90px 1fr; gap: 12px;
+      .tr {
+        display:grid;
+        grid-template-columns: 140px 120px 220px 140px 90px 1fr;
+        gap: 12px;
         padding: 14px; border:1px solid var(--line); border-radius: 16px; background:#fff;
       }
       .th { background:#f9fafb; font-weight: 900; color:#374151; }
@@ -1268,24 +1145,16 @@ function Style() {
       .part { font-weight: 900; }
       .muted { color: var(--muted); font-size: 12px; }
       .actions { display:flex; flex-wrap:wrap; gap: 8px; align-items:center; }
-
       .form { display:flex; flex-direction:column; gap: 10px; }
       label { display:flex; flex-direction:column; gap: 6px; font-weight: 800; }
-      input, select, textarea {
-        padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; font: inherit;
-      }
+      input, select, textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; font: inherit; }
       textarea { resize: vertical; }
       .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
       .row { flex-direction: row; align-items:center; gap: 10px; }
-
       .center { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 20px; }
       .login { width: 520px; max-width: 92vw; background:#fff; border:1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
-
       .pop { max-width: 1220px; margin: 18px auto; padding: 0 18px; }
-      .pop-top { display:flex; align-items:center; justify-content:space-between; gap: 12px;
-        background:#fff; border:1px solid var(--line); border-radius: 18px; padding: 14px 16px; box-shadow: var(--shadow);
-        margin-bottom: 14px;
-      }
+      .pop-top { display:flex; align-items:center; justify-content:space-between; gap: 12px; background:#fff; border:1px solid var(--line); border-radius: 18px; padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 14px; }
       .note { padding: 10px 12px; border:1px solid var(--line); border-radius: 14px; margin-top: 10px; background:#fff; }
       @media (max-width: 1100px) {
         .tr { grid-template-columns: 140px 120px 1fr; }
